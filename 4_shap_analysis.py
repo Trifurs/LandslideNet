@@ -12,26 +12,21 @@ from tqdm import tqdm
 import glob
 from matplotlib.colors import Normalize
 from matplotlib.ticker import ScalarFormatter, MaxNLocator
-from matplotlib.patheffects import withStroke # 用于文本美化
+from matplotlib.patheffects import withStroke
 
-# 引入您的自定义模块
-# 假设 utils.py 包含 LandslideNet 和 create_dataloaders
 from utils import LandslideNet, create_dataloaders 
 
-# 过滤警告
 warnings.filterwarnings("ignore")
 
-# --- 配置常量 ---
 SHAP_NUM_BATCHES = 100
 MAX_SUMMARY_POINTS = 200 
 FACTOR_VIZ_COLS = 5 
 FACTOR_VIZ_ROWS = 4 
 
-# --- 全局 Matplotlib 美化设置 ---
 plt.rcParams['font.family'] = 'Times New Roman'
 plt.rcParams['mathtext.fontset'] = 'stix' 
-plt.rcParams['axes.linewidth'] = 1.5 # 增加坐标轴和图例的线条粗细
-plt.rcParams['figure.dpi'] = 1000 # 设置默认分辨率
+plt.rcParams['axes.linewidth'] = 1.5 
+plt.rcParams['figure.dpi'] = 1000 
 
 BASE_FONT = 'Times New Roman'
 
@@ -56,7 +51,6 @@ LOCAL_FONT_CONFIG = {
     'cbar_label_size': 19, 'cbar_label_weight': 'bold',
 }
 
-# --- 字典配置 ---
 NAME_DICT = {
     'Slope': 'Slope', 'Aspect': 'Aspect', 'Temperatur': 'Temperature', 'DEM': 'Elevation',
     'Soil': 'Soil', 'Rain': 'Rainfall', 'Earthquake': 'Seismic density', 'Geology': 'Lithology',
@@ -73,7 +67,6 @@ TYPE_DICT = {
     'TPI': 'Topographic', 'Curvature': 'Topographic', 'Population': 'Anthropogenic', 'TWI': 'Hydrological'
 }
 
-# --- 核心模型封装 ---
 class LandslideNetWrapper(nn.Module):
     def __init__(self, model, target_class=1):
         super(LandslideNetWrapper, self).__init__()
@@ -83,11 +76,9 @@ class LandslideNetWrapper(nn.Module):
     def forward(self, x):
         output = self.model(x) 
         target_output = output[:, self.target_class, :, :] 
-        # 对输出的空间维度取均值，得到 (Batch, 1) 的张量
         batch_output = torch.mean(target_output, dim=(1, 2)).unsqueeze(1) 
         return batch_output 
 
-# --- 工具函数 ---
 def load_factor_names(factors_dir, num_bands):
     file_paths = sorted(glob.glob(os.path.join(factors_dir, '*.tif')))
     if not file_paths:
@@ -159,7 +150,6 @@ def center_crop_tensor(imgs, crop_size):
     if imgs.ndim == 4:
         return imgs[:, :, cy-sy:cy+sy, cx-sx:cx+sx]
     else: 
-        # 修正：当ndim=3时，裁剪应该保留第一维
         return imgs[:, cy-sy:cy+sy, cx-sx:cx+sx] 
 
 def find_slide_sample(test_loader, crop_size, device, max_batches=15):
@@ -181,18 +171,15 @@ def find_slide_sample(test_loader, crop_size, device, max_batches=15):
         cropped_labels = center_crop_tensor(current_labels, crop_size).cpu().numpy()
         for i in range(len(cropped_labels)):
             if 1 in cropped_labels[i]:
-                # 注意：这里需要对 current_inputs 和 current_labels 也进行 center_crop_tensor
                 test_inputs = center_crop_tensor(current_inputs, crop_size).to(device)
                 test_labels = center_crop_tensor(current_labels, crop_size).to(device)
                 return background_inputs, test_inputs, test_labels, i
-                
-    # 如果找不到滑坡样本，返回第一个批次的第一个样本
+
     first_batch_inputs, first_batch_labels = next(iter(test_loader))
     test_inputs = center_crop_tensor(first_batch_inputs, crop_size).to(device)
     test_labels = center_crop_tensor(first_batch_labels, crop_size).to(device)
     return background_inputs, test_inputs, test_labels, 0
 
-# --- 绘图函数：所有因子的局部 SHAP 影响图 (已精简刻度并修复裁剪) ---
 def plot_local_factor_shap_maps(
     img_tensor, shap_tensor, factor_names, num_bands, output_dir, font_config
 ):
@@ -209,8 +196,7 @@ def plot_local_factor_shap_maps(
     axes = axes.flatten()
     
     print(f"Plotting {len(factors_to_plot)} individual factor SHAP maps...")
-    
-    # 定义精简的刻度：[-max, 0, max]
+ 
     cbar_ticks_raw = np.array([-shap_max_abs, 0.0, shap_max_abs])
     
     for i, name in enumerate(factors_to_plot):
@@ -225,28 +211,23 @@ def plot_local_factor_shap_maps(
                       fontweight=font_config['subplot_title_weight'], 
                       fontsize=font_config['subplot_title_size'],
                       pad=10) 
-        
-        # 添加颜色条
+
         cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, shrink=1.0)
-        
-        # 消除颜色条轮廓和空白
+
         cbar.ax.margins(0) 
         cbar.outline.set_linewidth(0) 
-        cbar.ax.tick_params(length=0) # 移除刻度线
+        cbar.ax.tick_params(length=0) 
         
-        # 精简刻度为 [-Max, 0, Max]
         scaled_ticks = cbar_ticks_raw * 1000
         
         cbar.set_ticks(cbar_ticks_raw)
         cbar.set_ticklabels([f'{t:.1f}' for t in scaled_ticks])
         
-        # 设置颜色条字体
         for label in cbar.ax.get_yticklabels():
             label.set_fontname(BASE_FONT)
             label.set_fontweight(font_config['cbar_label_weight'])
             label.set_fontsize(font_config['cbar_label_size'])
             
-        # 顶部单位标注 (修复裁剪问题，增大x)
         cbar.ax.text(**{'x': 3.5, 'y': 1.05}, 
                       s=r'$\times 10^{-3}$', transform=cbar.ax.transAxes, 
                       fontname=BASE_FONT, 
@@ -254,7 +235,6 @@ def plot_local_factor_shap_maps(
                       fontsize=font_config['cbar_label_size'],
                       ha='center', va='bottom')
 
-    # 隐藏多余的子图
     for j in range(len(factors_to_plot), len(axes)):
         axes[j].axis('off') 
         
@@ -264,7 +244,6 @@ def plot_local_factor_shap_maps(
                   fontsize=font_config['suptitle_size'],
                   y=0.98) 
     
-    # 调整子图间距 (修复裁剪问题，增加右侧边距)
     plt.subplots_adjust(left=0.02, right=0.95, top=0.92, bottom=0.02, wspace=0.3, hspace=0.3)
     
     plt.savefig(os.path.join(output_dir, 'SHAP_Local_Factor_Maps.png'), dpi=300)
@@ -340,7 +319,6 @@ def run_shap_analysis(xml_path):
     shap_values_flat = np.transpose(all_shap_values_cat, (0, 2, 3, 1)).reshape(N_total, C)
     feature_values_flat = np.transpose(all_feature_values_cat, (0, 2, 3, 1)).reshape(N_total, C)
 
-    # --- 绘图 1: SHAP Summary Plot (完全恢复您的精细美化逻辑) ---
     print("\nGenerating SHAP Summary Plot (Violin)...")
     
     if N_total > MAX_SUMMARY_POINTS:
@@ -355,7 +333,6 @@ def run_shap_analysis(xml_path):
     
     fig = plt.figure(figsize=(13, 10))
     
-    # 使用 violin
     shap.summary_plot(
         shap_sub_scaled, features=feat_sub, feature_names=FACTOR_NAMES[:num_bands],
         max_display=num_bands, show=False, plot_type='violin',
@@ -363,8 +340,7 @@ def run_shap_analysis(xml_path):
     )
     
     ax = plt.gca()
-    
-    # ================= 恢复您原本复杂的颜色条控制逻辑 =================
+
     fig_axes = plt.gcf().axes
     if len(fig_axes) > 1:
         cbar_ax = fig_axes[-1]
@@ -422,7 +398,6 @@ def run_shap_analysis(xml_path):
     plt.savefig(os.path.join(output_dir, 'SHAP_Summary_Plot.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
-    # --- 绘图 1: SHAP Summary Plot (完全恢复您的精细美化逻辑) ---
     print("\nGenerating SHAP Summary Plot (Violin)...")
     
     if N_total > MAX_SUMMARY_POINTS:
@@ -435,24 +410,19 @@ def run_shap_analysis(xml_path):
     
     shap_sub_scaled = shap_sub * 10000.0
     
-    # 修复点：定义 SCI 经典的蓝紫红配色
-    # 如果 shap.colors 报错，通常可以使用内置的字符串 'coolwarm' 或手动获取 SHAP 颜色
     import matplotlib.colors as mcolors
-    # 这是 SHAP 经典的蓝到红的颜色定义
     shap_red_blue = mcolors.LinearSegmentedColormap.from_list("shap_red_blue", ["#1E88E5", "#ff0052"])
 
     fig = plt.figure(figsize=(13, 10))
     
-    # 使用 violin
     shap.summary_plot(
         shap_sub_scaled, features=feat_sub, feature_names=FACTOR_NAMES[:num_bands],
         max_display=num_bands, show=False, plot_type='violin',
-        cmap=shap_red_blue # 使用修复后的 cmap
+        cmap=shap_red_blue 
     )
     
     ax = plt.gca()
     
-    # ================= 恢复您原本复杂的颜色条控制逻辑 =================
     fig_axes = plt.gcf().axes
     if len(fig_axes) > 1:
         cbar_ax = fig_axes[-1]
@@ -510,23 +480,20 @@ def run_shap_analysis(xml_path):
     plt.savefig(os.path.join(output_dir, 'SHAP_Summary_Plot.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
-    # --- 新增: SHAP Summary Plot (Beeswarm) ---
     print("Generating SHAP Beeswarm Plot...")
     plt.figure(figsize=(13, 10))
     
     shap.summary_plot(
         shap_sub_scaled, features=feat_sub, feature_names=FACTOR_NAMES[:num_bands], 
-        plot_type='dot', show=False, cmap=shap_red_blue # 保持配色一致
+        plot_type='dot', show=False, cmap=shap_red_blue 
     )
     
     ax = plt.gca()
 
-    # 1. 调整散点大小
     for child in ax.get_children():
         if isinstance(child, plt.matplotlib.collections.PathCollection):
             child.set_sizes([25]) 
 
-    # 2. 统一字体和格式
     current_ticks = ax.get_xticks()
     ax.set_xticklabels([f'{t:.1f}' for t in current_ticks], 
                         fontname=BASE_FONT, 
@@ -547,7 +514,6 @@ def run_shap_analysis(xml_path):
               fontweight=SUMMARY_FONT_CONFIG['title_weight'], 
               fontsize=SUMMARY_FONT_CONFIG['title_size'])
 
-    # 3. 颜色条美化
     fig_axes = plt.gcf().axes
     if len(fig_axes) > 1:
         cbar_ax = fig_axes[-1]
@@ -569,7 +535,6 @@ def run_shap_analysis(xml_path):
     plt.savefig(os.path.join(output_dir, 'SHAP_Summary_Beeswarm.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
-    # --- 绘图 2: Global Importance with Categories (完全恢复您的代码) ---
     print("Generating Classified Global Importance Plot...")
     
     global_imp = np.mean(np.abs(shap_values_flat), axis=0)
@@ -600,8 +565,7 @@ def run_shap_analysis(xml_path):
                fontname=BASE_FONT, 
                fontweight=GLOBAL_FONT_CONFIG['tick_weight'], 
                fontsize=GLOBAL_FONT_CONFIG['tick_size'])
-    
-    # === 修复点：设置横坐标刻度值的字体 ===
+
     plt.xticks(fontname=BASE_FONT, 
                fontweight=GLOBAL_FONT_CONFIG['tick_weight'], 
                fontsize=GLOBAL_FONT_CONFIG['tick_size'])
@@ -654,7 +618,6 @@ def run_shap_analysis(xml_path):
             cat = TYPE_DICT.get(name, 'Unknown')
             f.write(f"{i+1},{name},{cat},{val:.6f}\n")
 
-    # --- 新增: Dependence Plot & Interaction Effect ---
     print("Generating Dependence Plots...")
     for i in range(min(2, len(indices))):
         idx_f = indices[i]
@@ -663,19 +626,15 @@ def run_shap_analysis(xml_path):
         plt.savefig(os.path.join(output_dir, f'SHAP_Dependence_{FACTOR_NAMES[idx_f]}.png'), dpi=300)
         plt.close()
 
-    # --- 新增: Waterfall/Force/Decision (解决 expected_value 报错) ---
     print("Generating Local Sample Explanations...")
-    # 获取基准值 (适配不同版本的属性名)
     if hasattr(explainer, 'expected_value'):
         base_val = explainer.expected_value
     else:
-        # 备选方案：通过模型在空输入上的预测估算（GradientExplainer通常有此属性）
         base_val = 0.0 
     
     if isinstance(base_val, (list, np.ndarray, torch.Tensor)):
         base_val = base_val[0]
 
-    # 提取滑坡样本中心像素点
     ch, cw = SHAP_CROP // 2, SHAP_CROP // 2
     px_shap = all_shap_values_cat[sample_idx, :, ch, cw]
     px_feat = all_feature_values_cat[sample_idx, :, ch, cw]
@@ -698,7 +657,6 @@ def run_shap_analysis(xml_path):
     plt.savefig(os.path.join(output_dir, 'SHAP_Decision_Plot.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
-    # --- 绘图 3: 所有因子的局部可视化 (恢复您的代码) ---
     print("Generating Local Factor SHAP Maps...")
     
     local_shap_raw = explainer.shap_values(local_test_inputs, ranked_outputs=None)
@@ -724,3 +682,4 @@ if __name__ == '__main__':
         traceback.print_exc()
         print('<shap_status>1</shap_status>')
         print(f'<shap_log>{str(e)}</shap_log>')
+
