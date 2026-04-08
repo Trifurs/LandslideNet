@@ -12,7 +12,7 @@
         <description>输入标签文件夹</description>
         <inout>in</inout>
         <type>folder</type>
-        <info>包含滑坡点（2）和非滑坡点（1）的tif影像</info>
+        <info>包含滑坡点（1）和非滑坡点（2）的tif影像</info>
         <value>D:\lb\myCode\LandslideNet\Data\origin\label</value>
     </param>
     <param>
