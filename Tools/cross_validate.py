@@ -19,7 +19,7 @@ from sklearn.metrics import (
 )
 from datetime import datetime
 
-from Network.utils import load_config, LandslideNet, LandslideDataset, create_dataloaders
+from utils import load_config, LandslideNet, LandslideDataset, create_dataloaders
 
 def get_argv(xml_file):
     param_names = [
