@@ -877,7 +877,7 @@ def parse_args():
     parser.add_argument(
         "--buffer-pixels",
         type=int,
-        default=0,
+        default=512,
         help="Remove training patches within this Chebyshev pixel distance from test patch centers. Use 512 for a conservative non-overlap buffer.",
     )
     parser.add_argument("--val-fraction", type=float, default=0.2)
