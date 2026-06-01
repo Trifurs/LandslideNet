@@ -5,7 +5,7 @@
         <inout>in</inout>
         <type>folder</type>
         <info>20个滑坡影响因子（已归一化）的tif文件所在目录</info>
-        <value>D:\lb\myCode\LandslideNet\Data\origin\factors</value>
+        <value>/home/whu/桌面/myData/LSM\origin\factors</value>
     </param>
     <param>
         <name>input_labels_dir</name>
@@ -13,7 +13,7 @@
         <inout>in</inout>
         <type>folder</type>
         <info>包含滑坡点（1）和非滑坡点（2）的tif影像</info>
-        <value>D:\lb\myCode\LandslideNet\Data\origin\label</value>
+        <value>/home/whu/桌面/myData/LSM\origin\label</value>
     </param>
     <param>
         <name>output_factors_dir</name>
@@ -21,7 +21,7 @@
         <inout>out</inout>
         <type>folder</type>
         <info>经裁剪等处理后的训练测试的特征影像所在目录</info>
-        <value>D:\lb\myCode\LandslideNet\Data\origin\cut\factor</value>
+        <value>/home/whu/桌面/myData/LSM\origin\cut\factor</value>
     </param>
     <param>
         <name>output_labels_dir</name>
@@ -29,7 +29,7 @@
         <inout>out</inout>
         <type>folder</type>
         <info>经裁剪等处理后的训练测试的标签所在目录</info>
-        <value>D:\lb\myCode\LandslideNet\Data\origin\cut\label</value>
+        <value>/home/whu/桌面/myData/LSM\origin\cut\label</value>
     </param>
     <param>
         <name>crop_size</name>
@@ -53,7 +53,7 @@
         <inout>out</inout>
         <type>folder</type>
         <info>训练日志和权重的输出文件夹</info>
-        <value>D:\lb\myCode\LandslideNet\Result\origin\pth</value>
+        <value>/home/whu/桌面/myResult/LandslideNet\pth</value>
     </param>
     <param>
         <name>num_epochs</name>
@@ -69,7 +69,7 @@
         <inout>in</inout>
         <type>float</type>
         <info>学习率</info>
-        <value>0.0001</value>
+        <value>0.001</value>
     </param>
     <param>
         <name>weight_decay</name>
@@ -77,7 +77,7 @@
         <inout>in</inout>
         <type>float</type>
         <info>L2正则化</info>
-        <value>0.0001</value>
+        <value>0.001</value>
     </param>
     <param>
         <name>device_ids</name>
@@ -101,7 +101,7 @@
         <inout>in</inout>
         <type>int</type>
         <info>批处理大小</info>
-        <value>4</value>
+        <value>8</value>
     </param>
     <param>
         <name>num_workers</name>
@@ -109,7 +109,7 @@
         <inout>in</inout>
         <type>int</type>
         <info>数据加载器的工作线程数</info>
-        <value>0</value>
+        <value>8</value>
     </param>
     <param>
         <name>num_bands</name>
@@ -125,7 +125,7 @@
         <inout>out</inout>
         <type>folder</type>
         <info>滑坡敏感性地图输出文件夹，还未处理接缝</info>
-        <value>D:\lb\myCode\LandslideNet\Result\origin\LSM</value>
+        <value>/home/whu/桌面/myResult/LandslideNet\LSM</value>
     </param>
     <param>
         <name>mosaic_map</name>
@@ -133,6 +133,6 @@
         <inout>out</inout>
         <type>file</type>
         <info>镶嵌消除接缝后的滑坡敏感性地图输出路径</info>
-        <value>D:\lb\myCode\LandslideNet\Result\origin\LSM\mosaic\landslide_susceptibility_map.tif</value>
+        <value>/home/whu/桌面/myResult/LandslideNet\LSM\mosaic\landslide_susceptibility_map.tif</value>
     </param>
 </startParam>

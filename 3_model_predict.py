@@ -11,6 +11,34 @@ import csv
 
 from utils import LandslideNet
 
+def normalize_path(value):
+    value = str(value).strip()
+    if os.name != 'nt' and (value.startswith('/') or value.startswith('~') or value.startswith('.')):
+        value = os.path.expanduser(value).replace('\\', '/')
+    return value
+
+def resolve_device(device_ids):
+    if not torch.cuda.is_available():
+        return torch.device('cpu'), []
+    
+    available = torch.cuda.device_count()
+    valid_device_ids = [gpu_id for gpu_id in device_ids if 0 <= gpu_id < available]
+    if not valid_device_ids:
+        valid_device_ids = [0]
+    return torch.device(f'cuda:{valid_device_ids[0]}'), valid_device_ids
+
+def load_state_dict_flexible(model, weight_path):
+    state_dict = torch.load(weight_path, map_location='cpu')
+    model_is_parallel = isinstance(model, nn.DataParallel)
+    has_module_prefix = any(key.startswith('module.') for key in state_dict)
+
+    if model_is_parallel and not has_module_prefix:
+        state_dict = {f'module.{key}': value for key, value in state_dict.items()}
+    elif not model_is_parallel and has_module_prefix:
+        state_dict = {key.replace('module.', '', 1): value for key, value in state_dict.items()}
+
+    model.load_state_dict(state_dict)
+
 def get_argv(xml_file):
     argv_names = [
         'train_output', 
@@ -27,14 +55,16 @@ def get_argv(xml_file):
     for argv_name in argv_names:
         for parameter in root.findall('param'):
             name = parameter.find('name').text
-            value = parameter.find('value').text
+            value = normalize_path(parameter.find('value').text)
             if name == argv_name:
                 argv_values.append(value)
     return argv_values
 
 def predict_landslide_sensitivity(model, factors_dir, output_dir, crop_size=512, overlap_size=128, batch_size=32, device_ids=[0, 1]):
-    model = nn.DataParallel(model, device_ids=list(map(int, device_ids)))
-    model = model.cuda()
+    device, valid_device_ids = resolve_device(list(map(int, device_ids)))
+    if device.type == 'cuda' and len(valid_device_ids) > 1 and not isinstance(model, nn.DataParallel):
+        model = nn.DataParallel(model, device_ids=valid_device_ids)
+    model = model.to(device)
     model.eval()
 
     os.makedirs(output_dir, exist_ok=True)
@@ -70,10 +100,11 @@ def predict_landslide_sensitivity(model, factors_dir, output_dir, crop_size=512,
                 factors_batch = np.pad(factors_batch,
                                       ((0,0), (0, crop_size-win_h), (0, crop_size-win_w)),
                                       mode='constant')
-                factors_batch = torch.tensor(factors_batch, dtype=torch.float32).unsqueeze(0).cuda()
+                factors_batch = torch.tensor(factors_batch, dtype=torch.float32).unsqueeze(0).to(device)
 
                 with torch.no_grad():
-                    prob = torch.sigmoid(model(factors_batch)[0,0]).cpu().numpy()[:win_h, :win_w]
+                    outputs = model(factors_batch)
+                    prob = torch.softmax(outputs, dim=1)[0, 1].cpu().numpy()[:win_h, :win_w]
                     temp_dst.write(prob.astype(np.float32), 1, window=window)
 
     with rasterio.open(factor_files[0]) as mask_src, \
@@ -114,7 +145,7 @@ def mosaic_landslide_sensitivity_maps(input_dir, output_path):
         
         final_output[y, :] = np.nanmedian(row_stack, axis=1)
 
-    final_output = np.where(base_mask, 1 - final_output, nodata)
+    final_output = np.where(base_mask, final_output, nodata)
     
     # Statistics module
     valid_pixels = final_output[base_mask]
@@ -159,18 +190,18 @@ def mosaic_landslide_sensitivity_maps(input_dir, output_path):
         dst.write(final_output, 1)
 
 def main(train_output, factors_dir, lsm_dir, device_ids, batch_size, crop_size, num_bands, mosaic_map):
+    device_id_list = list(map(int, device_ids.strip('[]').split(',')))
     model = LandslideNet(int(num_bands))
-    model = nn.DataParallel(model)
-    model.load_state_dict(torch.load(os.path.join(train_output, 'best_model_weight.pth')))
+    load_state_dict_flexible(model, os.path.join(train_output, 'best_model_weight.pth'))
     
     overlap_list = [0, 128, 80, 55, 199, 175]
     list_index = 1
     for overlap_size in overlap_list:
         print(f"{list_index}/{len(overlap_list)}: Processing with overlap size {overlap_size}")   
-        predict_landslide_sensitivity(model, factors_dir, lsm_dir, 
-                                     int(crop_size), overlap_size, 
-                                     int(batch_size), 
-                                     list(map(int, device_ids.strip('[]').split(','))))
+        predict_landslide_sensitivity(model, factors_dir, lsm_dir,
+                                     int(crop_size), overlap_size,
+                                     int(batch_size),
+                                     device_id_list)
         list_index += 1
 
     mosaic_landslide_sensitivity_maps(lsm_dir, mosaic_map)

@@ -1,6 +1,14 @@
 import sys
+import os
 import xml.etree.ElementTree as ET
 from utils import *
+
+
+def normalize_path(value):
+    value = str(value).strip()
+    if os.name != 'nt' and (value.startswith('/') or value.startswith('~') or value.startswith('.')):
+        value = os.path.expanduser(value).replace('\\', '/')
+    return value
 
 
 def get_argv(xml_file):
@@ -16,7 +24,7 @@ def get_argv(xml_file):
     for argv_name in argv_names:
         for param in root.findall('param'):
             if param.find('name').text == argv_name:
-                argv_values.append(param.find('value').text)
+                argv_values.append(normalize_path(param.find('value').text))
                 break
         else:
             raise ValueError(f"Parameter {argv_name} not found")

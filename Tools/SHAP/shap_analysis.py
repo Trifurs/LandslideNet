@@ -3,6 +3,7 @@ import os
 import xml.etree.ElementTree as ET
 import torch
 import numpy as np
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import shap
@@ -14,7 +15,7 @@ from matplotlib.colors import Normalize
 from matplotlib.ticker import ScalarFormatter, MaxNLocator
 from matplotlib.patheffects import withStroke
 
-from utils import LandslideNet, create_dataloaders 
+from utils import LandslideNet, create_dataloaders
 
 warnings.filterwarnings("ignore")
 
@@ -135,6 +136,18 @@ def get_argv(xml_file):
         else:
             raise ValueError(f"Parameter {name} not found in XML.")
     return params
+
+def load_state_dict_flexible(model, weight_path):
+    state_dict = torch.load(weight_path, map_location='cpu')
+    model_is_parallel = isinstance(model, nn.DataParallel)
+    has_module_prefix = any(key.startswith('module.') for key in state_dict)
+
+    if model_is_parallel and not has_module_prefix:
+        state_dict = {f'module.{key}': value for key, value in state_dict.items()}
+    elif not model_is_parallel and has_module_prefix:
+        state_dict = {key.replace('module.', '', 1): value for key, value in state_dict.items()}
+
+    model.load_state_dict(state_dict)
 
 def center_crop_tensor(imgs, crop_size):
     if imgs.ndim == 4:
@@ -274,7 +287,7 @@ def run_shap_analysis(xml_path):
     model = LandslideNet(num_bands=num_bands)
     best_weights = os.path.join(train_output, "best_model_weight.pth")
     if not os.path.exists(best_weights): raise FileNotFoundError(f"Weights not found: {best_weights}")
-    model.load_state_dict(torch.load(best_weights, map_location='cpu'))
+    load_state_dict_flexible(model, best_weights)
     model.eval()
     wrapper_model = LandslideNetWrapper(model, target_class=1).to(device)
 

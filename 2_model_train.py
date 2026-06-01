@@ -1,5 +1,6 @@
 import sys
 import os
+import copy
 import xml.etree.ElementTree as ET
 import torch
 import logging
@@ -16,6 +17,22 @@ from utils import load_config, LandslideNet, create_dataloaders
 from datetime import datetime
 import numpy as np
 
+def normalize_path(value):
+    value = str(value).strip()
+    if os.name != 'nt' and (value.startswith('/') or value.startswith('~') or value.startswith('.')):
+        value = os.path.expanduser(value).replace('\\', '/')
+    return value
+
+def resolve_device(device_ids):
+    if not torch.cuda.is_available():
+        return torch.device('cpu'), []
+    
+    available = torch.cuda.device_count()
+    valid_device_ids = [gpu_id for gpu_id in device_ids if 0 <= gpu_id < available]
+    if not valid_device_ids:
+        valid_device_ids = [0]
+    return torch.device(f'cuda:{valid_device_ids[0]}'), valid_device_ids
+
 def get_argv(xml_file):
     param_names = [
         'train_output', 'num_epochs', 'lr',
@@ -29,7 +46,7 @@ def get_argv(xml_file):
     for name in param_names:
         for param in root.findall('param'):
             if param.find('name').text == name:
-                params.append(param.find('value').text)
+                params.append(normalize_path(param.find('value').text))
                 break
         else:
             raise ValueError(f"Parameter {name} not found in config")
@@ -73,14 +90,16 @@ class DiceLoss(nn.Module):
         dice = (2. * intersection + self.smooth) / (union + self.smooth)
         return 1 - dice
 
-def evaluate_model(model, data_loader, phase='Validation'):
+def evaluate_model(model, data_loader, device, phase='Validation'):
     model.eval()
     running_loss = 0.0
     all_labels, all_preds = [], []
     
     with torch.no_grad():
         for inputs, labels, mask in data_loader:
-            inputs, labels, mask = inputs.cuda(), labels.cuda(), mask.cuda()
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+            mask = mask.to(device)
             
             outputs = model(inputs)
             loss = F.cross_entropy(outputs, labels, ignore_index=-1, reduction='none')
@@ -125,7 +144,11 @@ def evaluate_model(model, data_loader, phase='Validation'):
 def train_model(model, train_loader, val_loader, test_loader, num_epochs=10, lr=0.00001, 
                device_ids=[0, 1], patience=20, output_dir='output', weight_decay=1e-4):
     model.apply(initialize_weights)
-    model = nn.DataParallel(model, device_ids=device_ids).cuda()
+    device, valid_device_ids = resolve_device(device_ids)
+    model = model.to(device)
+    if device.type == 'cuda' and len(valid_device_ids) > 1:
+        model = nn.DataParallel(model, device_ids=valid_device_ids)
+    print(f"Using device: {device}; device_ids: {valid_device_ids}")
     
     criterion_ce = nn.CrossEntropyLoss(ignore_index=-1, reduction='none', label_smoothing=0.05)
     criterion_dice = DiceLoss()
@@ -133,15 +156,15 @@ def train_model(model, train_loader, val_loader, test_loader, num_epochs=10, lr=
     optimizer = optim.AdamW(model.parameters(), lr=float(lr), weight_decay=float(weight_decay) * 0.5)
     
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        optimizer, T_0=15, T_mult=2, eta_min=1e-7, verbose=True
+        optimizer, T_0=15, T_mult=2, eta_min=1e-7
     )
     
     logger = setup_logger(output_dir)
 
-    best_val_kappa = 0.0
+    best_val_kappa = -np.inf
     no_improvement_counter = 0
     best_model_epoch = 0
-    best_weights = model.state_dict()
+    best_weights = copy.deepcopy(model.state_dict())
     best_test_metrics = None
 
     for epoch in range(int(num_epochs)):
@@ -150,7 +173,9 @@ def train_model(model, train_loader, val_loader, test_loader, num_epochs=10, lr=
         all_labels, all_preds = [], []
         
         for inputs, labels, mask in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
-            inputs, labels, mask = inputs.cuda(), labels.cuda(), mask.cuda()
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+            mask = mask.to(device)
             
             optimizer.zero_grad()
             outputs = model(inputs)
@@ -162,9 +187,8 @@ def train_model(model, train_loader, val_loader, test_loader, num_epochs=10, lr=
             loss_dice = criterion_dice(outputs, labels, valid_mask)
             loss = loss_ce + 0.3 * loss_dice
             
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
-            
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
             optimizer.step()
             
             running_loss += loss.item()
@@ -178,7 +202,7 @@ def train_model(model, train_loader, val_loader, test_loader, num_epochs=10, lr=
         train_f1 = f1_score(all_labels, all_preds, average='binary', pos_label=1, zero_division=1)
         train_oa = accuracy_score(all_labels, all_preds)
         
-        val_result_str, val_metrics = evaluate_model(model, val_loader)
+        val_result_str, val_metrics = evaluate_model(model, val_loader, device)
         val_kappa = val_metrics['kappa']
         
         current_lr = optimizer.param_groups[0]['lr']
@@ -192,7 +216,7 @@ def train_model(model, train_loader, val_loader, test_loader, num_epochs=10, lr=
         
         if is_best:
             best_val_kappa = val_kappa
-            best_weights = model.state_dict()
+            best_weights = copy.deepcopy(model.state_dict())
             no_improvement_counter = 0
             best_model_epoch = epoch + 1
             
@@ -200,7 +224,7 @@ def train_model(model, train_loader, val_loader, test_loader, num_epochs=10, lr=
             
             torch.save(model.state_dict(), os.path.join(output_dir, f"best_model_epoch_{epoch+1}.pth"))
             
-            test_result_str, test_metrics = evaluate_model(model, test_loader, 'Test')
+            test_result_str, test_metrics = evaluate_model(model, test_loader, device, 'Test')
             best_test_metrics = test_metrics
             print(test_result_str)
             logger.info(f"Epoch {epoch+1} BEST | Val Kappa: {val_kappa:.4f} | Test Results: {test_result_str}")

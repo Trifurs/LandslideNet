@@ -88,11 +88,11 @@ class LandslideDataset(Dataset):
         with rasterio.open(label_path) as src:
             label = src.read(1)
 
-        label_processed = np.full_like(label, -1)
-        
-        label_processed[label == 1] = 0
-        
-        label_processed[label == 2] = 1
+        label_processed = np.full(label.shape, -1, dtype=np.int64)
+
+        label_processed[label == 1] = 1
+
+        label_processed[label == 2] = 0
 
         factors = []
         masks = []
@@ -310,8 +310,8 @@ def create_dataloaders(factors_dir, labels_dir, batch_size=32, crop_size=512, nu
             if not np.any(mask_valid):
                 continue
             
-            count_pos = np.sum(label == 2)
-            count_neg = np.sum(label == 1)
+            count_pos = np.sum(label == 1)
+            count_neg = np.sum(label == 2)
             
             ratio = count_pos / (count_pos + count_neg + 1e-6)
             file_names.append(label_file)
@@ -323,7 +323,7 @@ def create_dataloaders(factors_dir, labels_dir, batch_size=32, crop_size=512, nu
     train_files, temp_files, y_train, y_temp = train_test_split(
         file_names, 
         stratify_labels, 
-        test_size=0.4, 
+        test_size=0.7, 
         random_state=seed, 
         stratify=stratify_labels
     )
@@ -470,4 +470,3 @@ def move_missing_images_to_black(output_dir):
                     print(f"Image {image_name} is extra, moving to black folder.")
                     black_folder = create_black_folder(subdir_path)
                     move_to_black_folder(image_path, black_folder)
-                    

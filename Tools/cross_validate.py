@@ -21,6 +21,22 @@ from datetime import datetime
 
 from utils import load_config, LandslideNet, LandslideDataset, create_dataloaders
 
+def normalize_path(value):
+    value = str(value).strip()
+    if os.name != 'nt' and (value.startswith('/') or value.startswith('~') or value.startswith('.')):
+        value = os.path.expanduser(value).replace('\\', '/')
+    return value
+
+def resolve_device(device_ids):
+    if not torch.cuda.is_available():
+        return torch.device('cpu'), []
+    
+    available = torch.cuda.device_count()
+    valid_device_ids = [gpu_id for gpu_id in device_ids if 0 <= gpu_id < available]
+    if not valid_device_ids:
+        valid_device_ids = [0]
+    return torch.device(f'cuda:{valid_device_ids[0]}'), valid_device_ids
+
 def get_argv(xml_file):
     param_names = [
         'train_output', 'num_epochs', 'lr',
@@ -34,7 +50,7 @@ def get_argv(xml_file):
     for name in param_names:
         for param in root.findall('param'):
             if param.find('name').text == name:
-                params.append(param.find('value').text)
+                params.append(normalize_path(param.find('value').text))
                 break
         else:
             raise ValueError(f"Parameter {name} not found in config")
@@ -56,44 +72,91 @@ def setup_logger(output_dir, log_file='training.log'):
 
 def initialize_weights(m):
     if isinstance(m, (nn.Conv2d, nn.Linear)):
-        nn.init.xavier_normal_(m.weight)
+        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
         if m.bias is not None:
             nn.init.constant_(m.bias, 0)
 
-def evaluate_model(model, data_loader, phase='Validation'):
-    model.eval()
-    running_loss = 0.0
-    all_labels, all_preds = [], []
-    
-    with torch.no_grad():
-        for inputs, labels, mask in data_loader:
-            inputs, labels, mask = inputs.cuda(), labels.cuda(), mask.cuda()
-            
-            outputs = model(inputs)
-            loss = F.cross_entropy(outputs, labels, ignore_index=-1, reduction='none')
-            valid_mask = (labels != -1) & mask
-            loss = (loss * valid_mask).sum() / valid_mask.sum().clamp(min=1)
-            
-            running_loss += loss.item()
-            _, preds = torch.max(outputs, 1)
-            all_labels.extend(labels[valid_mask].cpu().numpy())
-            all_preds.extend(preds[valid_mask].cpu().numpy())
-    
-    avg_loss = running_loss / len(data_loader)
-    
-    cm = confusion_matrix(all_labels, all_preds, labels=[0, 1])
+class DiceLoss(nn.Module):
+    def __init__(self, smooth=1e-6):
+        super().__init__()
+        self.smooth = smooth
+
+    def forward(self, logits, targets, valid_mask=None):
+        probs = F.softmax(logits, dim=1)
+        pos_probs = probs[:, 1, :, :]
+        pos_targets = (targets == 1).float()
+
+        if valid_mask is not None:
+            pos_probs = pos_probs * valid_mask.float()
+            pos_targets = pos_targets * valid_mask.float()
+
+        intersection = (pos_probs * pos_targets).sum()
+        union = pos_probs.sum() + pos_targets.sum()
+        dice = (2.0 * intersection + self.smooth) / (union + self.smooth)
+        return 1.0 - dice
+
+def predict_probabilities(model, inputs, use_tta=False):
+    if not use_tta:
+        logits = model(inputs)
+        return F.softmax(logits, dim=1)[:, 1], logits
+
+    transforms = [
+        (lambda x: x, lambda x: x),
+        (lambda x: torch.flip(x, dims=[3]), lambda x: torch.flip(x, dims=[2])),
+        (lambda x: torch.flip(x, dims=[2]), lambda x: torch.flip(x, dims=[1])),
+        (lambda x: torch.flip(x, dims=[2, 3]), lambda x: torch.flip(x, dims=[1, 2])),
+    ]
+    probs = []
+    logits_original = None
+    for forward_transform, inverse_transform in transforms:
+        transformed = forward_transform(inputs)
+        logits = model(transformed)
+        if logits_original is None:
+            logits_original = logits
+        prob = F.softmax(logits, dim=1)[:, 1]
+        probs.append(inverse_transform(prob))
+    return torch.stack(probs, dim=0).mean(dim=0), logits_original
+
+
+def find_best_threshold(labels, probabilities, metric='f1'):
+    if len(labels) == 0:
+        return 0.5
+
+    thresholds = np.linspace(0.05, 0.95, 181)
+    best_threshold = 0.5
+    best_score = -np.inf
+
+    for threshold in thresholds:
+        preds = (probabilities >= threshold).astype(np.int64)
+        if metric == 'kappa':
+            score = cohen_kappa_score(labels, preds)
+        elif metric == 'iou':
+            score = jaccard_score(labels, preds, average='binary', pos_label=1, zero_division=1)
+        else:
+            score = f1_score(labels, preds, average='binary', pos_label=1, zero_division=1)
+
+        if score > best_score:
+            best_score = score
+            best_threshold = float(threshold)
+
+    return best_threshold
+
+
+def build_metrics(labels, preds, avg_loss, phase, threshold):
+    cm = confusion_matrix(labels, preds, labels=[0, 1])
     tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
-    
-    precision = precision_score(all_labels, all_preds, average='binary', pos_label=1, zero_division=1)
-    recall = recall_score(all_labels, all_preds, average='binary', pos_label=1, zero_division=1)
-    f1 = f1_score(all_labels, all_preds, average='binary', pos_label=1, zero_division=1)
-    iou = jaccard_score(all_labels, all_preds, average='binary', pos_label=1, zero_division=1)
-    oa = accuracy_score(all_labels, all_preds)
-    kappa = cohen_kappa_score(all_labels, all_preds)
+
+    precision = precision_score(labels, preds, average='binary', pos_label=1, zero_division=1)
+    recall = recall_score(labels, preds, average='binary', pos_label=1, zero_division=1)
+    f1 = f1_score(labels, preds, average='binary', pos_label=1, zero_division=1)
+    iou = jaccard_score(labels, preds, average='binary', pos_label=1, zero_division=1)
+    oa = accuracy_score(labels, preds)
+    kappa = cohen_kappa_score(labels, preds)
     specificity = tn / (tn + fp + 1e-6)
-    
+
     result_str = (f"\n[{phase} Results]\n"
                   f"Loss: {avg_loss:.4f}\n"
+                  f"Threshold: {threshold:.3f}\n"
                   f"OA: {oa:.4f}\n"
                   f"Kappa: {kappa:.4f}\n"
                   f"Precision: {precision:.4f}\n"
@@ -102,32 +165,70 @@ def evaluate_model(model, data_loader, phase='Validation'):
                   f"F1 Score: {f1:.4f}\n"
                   f"IoU: {iou:.4f}\n"
                   f"Confusion Matrix:\n{cm}")
-    
+
     return result_str, {
-        'loss': avg_loss, 'oa': oa, 'kappa': kappa,
+        'loss': avg_loss, 'threshold': threshold, 'oa': oa, 'kappa': kappa,
         'precision': precision, 'recall': recall, 'specificity': specificity,
         'f1': f1, 'iou': iou, 'cm': cm
     }
 
+
+def evaluate_model(model, data_loader, device, phase='Validation', threshold=0.5,
+                   tune_threshold=False, threshold_metric='f1', use_tta=False):
+    model.eval()
+    running_loss = 0.0
+    all_labels, all_probs = [], []
+    
+    with torch.no_grad():
+        for inputs, labels, mask in data_loader:
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+            mask = mask.to(device)
+            
+            probabilities, outputs = predict_probabilities(model, inputs, use_tta=use_tta)
+            loss = F.cross_entropy(outputs, labels, ignore_index=-1, reduction='none')
+            valid_mask = (labels != -1) & mask
+            loss = (loss * valid_mask).sum() / valid_mask.sum().clamp(min=1)
+            
+            running_loss += loss.item()
+            all_labels.extend(labels[valid_mask].cpu().numpy())
+            all_probs.extend(probabilities[valid_mask].cpu().numpy())
+    
+    avg_loss = running_loss / len(data_loader)
+    all_labels = np.asarray(all_labels, dtype=np.int64)
+    all_probs = np.asarray(all_probs, dtype=np.float64)
+    if tune_threshold:
+        threshold = find_best_threshold(all_labels, all_probs, metric=threshold_metric)
+    all_preds = (all_probs >= float(threshold)).astype(np.int64)
+
+    return build_metrics(all_labels, all_preds, avg_loss, phase, float(threshold))
+
 def train_model(model, train_loader, val_loader, test_loader, num_epochs=10, lr=0.00001, 
-               device_ids=[0, 1], patience=20, output_dir='output', weight_decay=1e-4, logger=None):
+               device_ids=[0, 1], patience=20, output_dir='output', weight_decay=1e-4,
+               logger=None, selection_metric='f1', threshold_metric='f1', use_tta=False):
     if logger is None:
         logger = setup_logger(output_dir)
         
     model.apply(initialize_weights)
-    model = nn.DataParallel(model, device_ids=device_ids).cuda()
+    device, valid_device_ids = resolve_device(device_ids)
+    model = model.to(device)
+    if device.type == 'cuda' and len(valid_device_ids) > 1:
+        model = nn.DataParallel(model, device_ids=valid_device_ids)
+    logger.info(f"Using device: {device}; device_ids: {valid_device_ids}")
     
-    criterion = nn.CrossEntropyLoss(ignore_index=-1, reduction='none')
-    optimizer = optim.AdamW(model.parameters(), lr=float(lr), weight_decay=float(weight_decay))
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='max', factor=0.5, patience=5, verbose=True, min_lr=1e-7
+    criterion_ce = nn.CrossEntropyLoss(ignore_index=-1, reduction='none', label_smoothing=0.05)
+    criterion_dice = DiceLoss()
+    optimizer = optim.AdamW(model.parameters(), lr=float(lr), weight_decay=float(weight_decay) * 0.5)
+    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=15, T_mult=2, eta_min=1e-7
     )
 
-    best_val_kappa = 0.0
+    best_val_score = -np.inf
     no_improvement_counter = 0
     best_model_epoch = 0
-    best_weights = model.state_dict()
+    best_weights = copy.deepcopy(model.state_dict())
     best_test_metrics = None
+    best_threshold = 0.5
 
     for epoch in range(int(num_epochs)):
         model.train()
@@ -135,18 +236,21 @@ def train_model(model, train_loader, val_loader, test_loader, num_epochs=10, lr=
         all_labels, all_preds = [], []
         
         for inputs, labels, mask in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
-            inputs, labels, mask = inputs.cuda(), labels.cuda(), mask.cuda()
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+            mask = mask.to(device)
             
             optimizer.zero_grad()
             outputs = model(inputs)
             
-            loss = criterion(outputs, labels)
+            loss_ce = criterion_ce(outputs, labels)
             valid_mask = (labels != -1) & mask
-            loss = (loss * valid_mask).sum() / valid_mask.sum().clamp(min=1)
-            
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            loss_ce = (loss_ce * valid_mask).sum() / valid_mask.sum().clamp(min=1)
+            loss_dice = criterion_dice(outputs, labels, valid_mask)
+            loss = loss_ce + 0.3 * loss_dice
             
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
             optimizer.step()
             
             running_loss += loss.item()
@@ -159,15 +263,24 @@ def train_model(model, train_loader, val_loader, test_loader, num_epochs=10, lr=
         train_recall = recall_score(all_labels, all_preds, average='binary', pos_label=1, zero_division=1)
         train_f1 = f1_score(all_labels, all_preds, average='binary', pos_label=1, zero_division=1)
         train_oa = accuracy_score(all_labels, all_preds)
+        train_kappa = cohen_kappa_score(all_labels, all_preds)
         
         log_msg = (f"\n[Epoch {epoch+1}/{num_epochs}] "
-                   f"Train Loss: {avg_train_loss:.4f} | OA: {train_oa:.4f} | "
+                   f"Train Loss: {avg_train_loss:.4f} | OA: {train_oa:.4f} | Kappa: {train_kappa:.4f} | "
                    f"Precision: {train_precision:.4f} | Recall: {train_recall:.4f} | F1: {train_f1:.4f}")
         print(log_msg)
         logger.info(log_msg)
 
-        val_result_str, val_metrics = evaluate_model(model, val_loader)
-        val_kappa = val_metrics['kappa']
+        val_result_str, val_metrics = evaluate_model(
+            model,
+            val_loader,
+            device,
+            threshold=None,
+            tune_threshold=True,
+            threshold_metric=threshold_metric,
+            use_tta=use_tta,
+        )
+        val_score = val_metrics.get(selection_metric, val_metrics['f1'])
         
         print(val_result_str)
         logger.info(val_result_str)
@@ -176,16 +289,17 @@ def train_model(model, train_loader, val_loader, test_loader, num_epochs=10, lr=
             f"Epoch {epoch+1} | "
             f"Train Loss: {avg_train_loss:.4f} | Val Loss: {val_metrics['loss']:.4f} | "
             f"Train/Val OA: {train_oa:.4f}/{val_metrics['oa']:.4f} | "
-            f"Train/Val Kappa: {train_oa:.4f}/{val_metrics['kappa']:.4f} | "
+            f"Train/Val Kappa: {train_kappa:.4f}/{val_metrics['kappa']:.4f} | "
             f"Train/Val Precision: {train_precision:.4f}/{val_metrics['precision']:.4f} | "
             f"Train/Val Recall: {train_recall:.4f}/{val_metrics['recall']:.4f} | "
             f"Train/Val F1: {train_f1:.4f}/{val_metrics['f1']:.4f} | "
             f"Val IoU: {val_metrics['iou']:.4f}"
         )
 
-        if val_kappa > best_val_kappa:
-            best_val_kappa = val_kappa
-            best_weights = model.state_dict()
+        if val_score > best_val_score:
+            best_val_score = val_score
+            best_threshold = val_metrics['threshold']
+            best_weights = copy.deepcopy(model.state_dict())
             no_improvement_counter = 0
             best_model_epoch = epoch + 1
             
@@ -194,14 +308,27 @@ def train_model(model, train_loader, val_loader, test_loader, num_epochs=10, lr=
             print(save_msg)
             logger.info(save_msg)
             
-            test_result_str, test_metrics = evaluate_model(model, test_loader, 'Test')
+            test_result_str, test_metrics = evaluate_model(
+                model,
+                test_loader,
+                device,
+                'Test',
+                threshold=best_threshold,
+                tune_threshold=False,
+                threshold_metric=threshold_metric,
+                use_tta=use_tta,
+            )
             best_test_metrics = test_metrics
             print(test_result_str)
-            logger.info(f"Test results for best model (epoch {epoch+1}): {test_result_str}")
+            logger.info(
+                f"Test results for best model (epoch {epoch+1}, "
+                f"selection_{selection_metric}={best_val_score:.4f}, "
+                f"threshold={best_threshold:.3f}): {test_result_str}"
+            )
         else:
             no_improvement_counter += 1
 
-        scheduler.step(val_kappa)
+        scheduler.step()
 
         if no_improvement_counter >= int(patience//2) and epoch > 10:
             logger.info(f"Early stopping warning at epoch {epoch+1} (no Kappa improvement for {int(patience//2)} epochs)")
@@ -210,7 +337,10 @@ def train_model(model, train_loader, val_loader, test_loader, num_epochs=10, lr=
             break
 
     torch.save(best_weights, os.path.join(output_dir, "best_model_weight.pth"))
-    logger.info(f"Best model saved from epoch {best_model_epoch} (val_kappa={best_val_kappa:.4f})")
+    logger.info(
+        f"Best model saved from epoch {best_model_epoch} "
+        f"(val_{selection_metric}={best_val_score:.4f}, threshold={best_threshold:.3f})"
+    )
     
     return best_test_metrics
 
