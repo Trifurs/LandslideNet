@@ -5,10 +5,10 @@
         <inout>in</inout>
         <type>folder</type>
         <info>20个滑坡影响因子（已归一化）的tif文件所在目录</info>
-        <value>S:\lb\myCode\LandslideNet\Data\type\DWSS\landslide\cropped_factors</value>
-        <!-- <value>S:\lb\myCode\LandslideNet\Data\type\DWSS\landslide(debris slide)\cropped_factors</value> -->
-        <!-- <value>S:\lb\myCode\LandslideNet\Data\type\DWSS\landslide(rock fall)\cropped_factors</value> -->
-        <!-- <value>S:\lb\myCode\LandslideNet\Data\type\DWSS\unstable slope\cropped_factors</value> -->
+        <!-- <value>/home/whu/桌面/Temp/LSM/type/DWSS/landslide/cropped_factors</value> -->
+        <!-- <value>/home/whu/桌面/Temp/LSM/type/DWSS/landslide(debris slide)/cropped_factors</value> -->
+        <!-- <value>/home/whu/桌面/Temp/LSM/type/DWSS/landslide(rock fall)/cropped_factors</value> -->
+        <value>/home/whu/桌面/Temp/LSM/type/DWSS/unstable slope/cropped_factors</value>
     </param>
     <param>
         <name>input_labels_dir</name>
@@ -16,10 +16,18 @@
         <inout>in</inout>
         <type>folder</type>
         <info>包含滑坡点（1）和非滑坡点（2）的tif影像，用于制作训练集</info>
-        <value>S:\lb\myCode\LandslideNet\Data\type\input\ls</value>
-        <!-- <value>S:\lb\myCode\LandslideNet\Data\type\input\ds</value> -->
-        <!-- <value>S:\lb\myCode\LandslideNet\Data\type\input\rf</value> -->
-        <!-- <value>S:\lb\myCode\LandslideNet\Data\type\input\us</value> -->
+        <!-- <value>/home/whu/桌面/Temp/LSM/type/input/ls</value> -->
+        <!-- <value>/home/whu/桌面/Temp/LSM/type/input/ds</value> -->
+        <!-- <value>/home/whu/桌面/Temp/LSM/type/input/rf</value> -->
+        <value>/home/whu/桌面/Temp/LSM/type/input/us</value>
+    </param>
+    <param>
+        <name>device_ids</name>
+        <description>GPU编号</description>
+        <inout>in</inout>
+        <type>list</type>
+        <info>模型训练时采用了两张GPU</info>
+        <value>[0]</value>
     </param>
     <param>
         <name>output_factors_dir</name>
@@ -27,10 +35,10 @@
         <inout>out</inout>
         <type>folder</type>
         <info>存放提取出的.npy格式的Patch样本（分train/val）</info>
-        <value>S:\lb\myCode\LandslideNet\Data\type\output\ls\patches</value>
-        <!-- <value>S:\lb\myCode\LandslideNet\Data\type\output\ds\patches</value> -->
-        <!-- <value>S:\lb\myCode\LandslideNet\Data\type\output\rf\patches</value> -->
-        <!-- <value>S:\lb\myCode\LandslideNet\Data\type\output\us\patches</value> -->
+        <!-- <value>/home/whu/桌面/Temp/LSM/type/output/ls/patches</value> -->
+        <!-- <value>/home/whu/桌面/Temp/LSM/type/output/ds/patches</value> -->
+        <!-- <value>/home/whu/桌面/Temp/LSM/type/output/rf/patches</value> -->
+        <value>/home/whu/桌面/Temp/LSM/type/output/us/patches</value>
     </param>
     <param>
         <name>output_labels_dir</name>
@@ -38,10 +46,10 @@
         <inout>out</inout>
         <type>folder</type>
         <info>存放提取出的标签（分train/val）</info>
-        <value>S:\lb\myCode\LandslideNet\Data\type\output\ls\labels</value>
-        <!-- <value>S:\lb\myCode\LandslideNet\Data\type\output\ds\labels</value> -->
-        <!-- <value>S:\lb\myCode\LandslideNet\Data\type\output\rf\labels</value> -->
-        <!-- <value>S:\lb\myCode\LandslideNet\Data\type\output\us\labels</value> -->
+        <!-- <value>/home/whu/桌面/Temp/LSM/type/output/ls/labels</value> -->
+        <!-- <value>/home/whu/桌面/Temp/LSM/type/output/ds/labels</value> -->
+        <!-- <value>/home/whu/桌面/Temp/LSM/type/output/rf/labels</value> -->
+        <value>/home/whu/桌面/Temp/LSM/type/output/us/labels</value>
     </param>
     <param>
         <name>crop_size</name>
@@ -57,7 +65,7 @@
         <inout>out</inout>
         <type>folder</type>
         <info>训练日志和权重的输出文件夹</info>
-        <value>S:\lb\myCode\LandslideNet\Data\type\output\pth</value>
+        <value>/home/whu/桌面/Temp/LSM/type/output/pth</value>
     </param>
     <param>
         <name>num_bands</name>

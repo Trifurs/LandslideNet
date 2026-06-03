@@ -6,6 +6,7 @@ import numpy as np
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from matplotlib import font_manager
 import shap
 import warnings
 import torch.nn as nn
@@ -15,7 +16,7 @@ from matplotlib.colors import Normalize
 from matplotlib.ticker import ScalarFormatter, MaxNLocator
 from matplotlib.patheffects import withStroke
 
-from utils import LandslideNet, create_dataloaders
+from utils import LandslideNet, LandslideNetBatchNorm, create_dataloaders
 
 warnings.filterwarnings("ignore")
 
@@ -24,12 +25,32 @@ MAX_SUMMARY_POINTS = 200
 FACTOR_VIZ_COLS = 5 
 FACTOR_VIZ_ROWS = 4 
 
-plt.rcParams['font.family'] = 'Times New Roman'
+TIMES_NEW_ROMAN_FONT_FILES = [
+    '/usr/share/fonts/truetype/times/times.ttf',
+    '/usr/share/fonts/truetype/times/timesbd.ttf',
+    '/usr/share/fonts/truetype/times/timesi.ttf',
+    '/usr/share/fonts/truetype/times/timesbi.ttf',
+]
+
+def configure_times_new_roman_font():
+    available_fonts = []
+    for font_path in TIMES_NEW_ROMAN_FONT_FILES:
+        if os.path.exists(font_path):
+            font_manager.fontManager.addfont(font_path)
+            available_fonts.append(font_path)
+
+    if not available_fonts:
+        return 'Times New Roman'
+
+    return font_manager.FontProperties(fname=available_fonts[0]).get_name()
+
+BASE_FONT = configure_times_new_roman_font()
+
+plt.rcParams['font.family'] = BASE_FONT
+plt.rcParams['font.serif'] = [BASE_FONT, 'DejaVu Serif']
 plt.rcParams['mathtext.fontset'] = 'stix' 
 plt.rcParams['axes.linewidth'] = 1.5 
 plt.rcParams['figure.dpi'] = 1000 
-
-BASE_FONT = 'Times New Roman'
 
 SUMMARY_FONT_CONFIG = {
     'title_size': 25, 'title_weight': 'bold',
@@ -137,17 +158,79 @@ def get_argv(xml_file):
             raise ValueError(f"Parameter {name} not found in XML.")
     return params
 
-def load_state_dict_flexible(model, weight_path):
-    state_dict = torch.load(weight_path, map_location='cpu')
-    model_is_parallel = isinstance(model, nn.DataParallel)
-    has_module_prefix = any(key.startswith('module.') for key in state_dict)
+def resolve_device(device_ids):
+    if not torch.cuda.is_available():
+        return torch.device('cpu'), []
 
-    if model_is_parallel and not has_module_prefix:
-        state_dict = {f'module.{key}': value for key, value in state_dict.items()}
-    elif not model_is_parallel and has_module_prefix:
-        state_dict = {key.replace('module.', '', 1): value for key, value in state_dict.items()}
+    available = torch.cuda.device_count()
+    valid_device_ids = [gpu_id for gpu_id in device_ids if 0 <= gpu_id < available]
+    if not valid_device_ids:
+        valid_device_ids = [0]
+    return torch.device(f'cuda:{valid_device_ids[0]}'), valid_device_ids
+
+def unwrap_checkpoint_state_dict(checkpoint):
+    if not isinstance(checkpoint, dict):
+        raise TypeError(f"Unsupported checkpoint type: {type(checkpoint).__name__}")
+
+    for key in ('state_dict', 'model_state_dict', 'model'):
+        value = checkpoint.get(key)
+        if isinstance(value, dict):
+            return value
+
+    return checkpoint
+
+def strip_module_prefix(state_dict):
+    if any(key.startswith('module.') for key in state_dict):
+        return {key.replace('module.', '', 1): value for key, value in state_dict.items()}
+    return state_dict
+
+def add_module_prefix(state_dict):
+    if any(key.startswith('module.') for key in state_dict):
+        return state_dict
+    return {f'module.{key}': value for key, value in state_dict.items()}
+
+def normalize_shap_values(shap_values_raw):
+    if isinstance(shap_values_raw, tuple):
+        shap_values_raw = shap_values_raw[0]
+
+    if isinstance(shap_values_raw, list):
+        if not shap_values_raw:
+            raise ValueError("SHAP returned an empty values list.")
+        shap_values_raw = shap_values_raw[0]
+
+    shap_values = np.asarray(shap_values_raw)
+
+    if shap_values.ndim == 5 and shap_values.shape[-1] == 1:
+        shap_values = np.squeeze(shap_values, axis=-1)
+
+    if shap_values.ndim != 4:
+        raise ValueError(f"Unexpected SHAP values shape: {shap_values.shape}")
+
+    return shap_values
+
+def checkpoint_uses_legacy_batchnorm(state_dict):
+    keys = set(state_dict)
+    return (
+        any('.bn.' in key for key in keys)
+        or any(key.endswith('.running_mean') or key.endswith('.running_var') for key in keys)
+    )
+
+def load_state_dict_flexible(model, weight_path):
+    checkpoint = torch.load(weight_path, map_location='cpu')
+    state_dict = strip_module_prefix(unwrap_checkpoint_state_dict(checkpoint))
+
+    if checkpoint_uses_legacy_batchnorm(state_dict) and not isinstance(model, LandslideNetBatchNorm):
+        num_bands = model.conv[0].in_channels
+        num_classes = model.final_conv.out_channels
+        print("Detected legacy BatchNorm checkpoint; using LandslideNetBatchNorm for compatibility.")
+        model = LandslideNetBatchNorm(num_bands=num_bands, num_classes=num_classes)
+
+    model_is_parallel = isinstance(model, nn.DataParallel)
+    if model_is_parallel:
+        state_dict = add_module_prefix(state_dict)
 
     model.load_state_dict(state_dict)
+    return model
 
 def center_crop_tensor(imgs, crop_size):
     if imgs.ndim == 4:
@@ -275,7 +358,8 @@ def run_shap_analysis(xml_path):
     orig_crop_size = int(params['crop_size']) 
     
     device_ids = list(map(int, params['device_ids'].strip('[]').split(',')))
-    device = torch.device(f"cuda:{device_ids[0]}" if torch.cuda.is_available() else "cpu")
+    device, valid_device_ids = resolve_device(device_ids)
+    print(f"Using device: {device}; valid_device_ids: {valid_device_ids}")
     
     output_dir = os.path.join(os.path.dirname(train_output), 'shap_analysis')
     os.makedirs(output_dir, exist_ok=True)
@@ -287,7 +371,7 @@ def run_shap_analysis(xml_path):
     model = LandslideNet(num_bands=num_bands)
     best_weights = os.path.join(train_output, "best_model_weight.pth")
     if not os.path.exists(best_weights): raise FileNotFoundError(f"Weights not found: {best_weights}")
-    load_state_dict_flexible(model, best_weights)
+    model = load_state_dict_flexible(model, best_weights)
     model.eval()
     wrapper_model = LandslideNetWrapper(model, target_class=1).to(device)
 
@@ -318,7 +402,7 @@ def run_shap_analysis(xml_path):
         current_inputs_cropped = center_crop_tensor(current_inputs, SHAP_CROP).to(device)
         shap_values_raw = explainer.shap_values(current_inputs_cropped, ranked_outputs=None)
         
-        shap_val = shap_values_raw[0] if isinstance(shap_values_raw, list) else shap_values_raw
+        shap_val = normalize_shap_values(shap_values_raw)
         all_shap_values.append(shap_val)
         all_feature_values.append(current_inputs_cropped.cpu().numpy())
         processed_batches += 1
@@ -673,7 +757,7 @@ def run_shap_analysis(xml_path):
     print("Generating Local Factor SHAP Maps...")
     
     local_shap_raw = explainer.shap_values(local_test_inputs, ranked_outputs=None)
-    shap_val_local = local_shap_raw[0] if isinstance(local_shap_raw, list) else local_shap_raw
+    shap_val_local = normalize_shap_values(local_shap_raw)
     
     img_tensor = local_test_inputs[sample_idx].cpu().numpy() 
     shap_tensor = shap_val_local[sample_idx] 

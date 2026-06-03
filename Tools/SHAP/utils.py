@@ -127,3 +127,292 @@ def create_dataloaders(factors_dir, labels_dir, batch_size=32, crop_size=512, nu
 
     return train_loader, val_loader, test_loader
 
+class DCSELayer(nn.Module):
+    def __init__(self, channel, reduction=8):
+        super().__init__()
+        self.theta = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channel, channel // reduction, 1),
+            nn.GroupNorm(1, channel // reduction),
+            nn.GELU()
+        )
+        self.phi = nn.Parameter(torch.randn(channel // reduction, channel))
+        nn.init.kaiming_uniform_(self.phi, mode='fan_in', nonlinearity='relu') 
+    
+    def forward(self, x):
+        B, C, H, W = x.size()
+        theta = self.theta(x).view(B, -1)
+        phi = F.softmax(self.phi, dim=-1)
+        dynamic_weights = torch.matmul(theta, phi).view(B, C, 1, 1).sigmoid()
+        return x * dynamic_weights.expand_as(x)
+
+class DCSELayerBatchNorm(nn.Module):
+    def __init__(self, channel, reduction=8):
+        super().__init__()
+        self.theta = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channel, channel // reduction, 1),
+            nn.BatchNorm2d(channel // reduction),
+            nn.GELU()
+        )
+        self.phi = nn.Parameter(torch.randn(channel // reduction, channel))
+        nn.init.kaiming_uniform_(self.phi, mode='fan_in', nonlinearity='relu')
+
+    def forward(self, x):
+        B, C, H, W = x.size()
+        theta = self.theta(x).view(B, -1)
+        phi = F.softmax(self.phi, dim=-1)
+        dynamic_weights = torch.matmul(theta, phi).view(B, C, 1, 1).sigmoid()
+        return x * dynamic_weights.expand_as(x)
+
+class DSConv(nn.Module):
+    def __init__(self, in_ch, out_ch, kernel_size=3, padding=1, groups=8):
+        super().__init__()
+        self.depthwise = nn.Conv2d(in_ch, in_ch, kernel_size, padding=padding, groups=in_ch, bias=False)
+        self.gn1 = nn.GroupNorm(groups, in_ch)
+        self.act1 = nn.GELU()
+        self.pointwise = nn.Conv2d(in_ch, out_ch, 1, bias=False)
+        self.gn2 = nn.GroupNorm(groups, out_ch)
+        self.act2 = nn.GELU()
+
+    def forward(self, x):
+        x = self.depthwise(x)
+        x = self.gn1(x)
+        x = self.act1(x)
+        x = self.pointwise(x)
+        x = self.gn2(x)
+        return self.act2(x)
+
+class DSConvBatchNorm(nn.Module):
+    def __init__(self, in_ch, out_ch, kernel_size=3, padding=1):
+        super().__init__()
+        self.depthwise = nn.Conv2d(in_ch, in_ch, kernel_size, padding=padding, groups=in_ch, bias=False)
+        self.pointwise = nn.Conv2d(in_ch, out_ch, 1, bias=False)
+        self.bn = nn.BatchNorm2d(out_ch)
+        self.act = nn.GELU()
+
+    def forward(self, x):
+        x = self.depthwise(x)
+        x = self.pointwise(x)
+        x = self.bn(x)
+        return self.act(x)
+
+class SpatialPerceptionBlock(nn.Module):
+    def __init__(self, in_c, out_c, dropout_p=0.1, groups=8):
+        super().__init__()
+        self.offset_conv = nn.Conv2d(in_c, 2*3*3, 3, padding=1)
+        nn.init.constant_(self.offset_conv.weight, 0)
+        if self.offset_conv.bias is not None:
+            nn.init.constant_(self.offset_conv.bias, 0)
+        
+        self.deform_conv = DeformConv2d(in_c, out_c, 3, padding=1) 
+        self.gn = nn.GroupNorm(groups, out_c)
+        self.dcse = DCSELayer(out_c)
+        self.dropout = nn.Dropout2d(p=dropout_p)
+        self.act = nn.ReLU(inplace=True)
+
+        self.downsample = None
+        if in_c != out_c:
+            self.downsample = nn.Sequential(
+                nn.Conv2d(in_c, out_c, 1, bias=False),
+                nn.GroupNorm(groups, out_c)
+            )
+
+    def forward(self, x):
+        identity = x
+        offsets = self.offset_conv(x)
+        out = self.deform_conv(x, offsets)
+        out = self.gn(out)
+        out = self.dcse(out)
+        out = self.dropout(out)
+        
+        if self.downsample is not None:
+            identity = self.downsample(x)
+            
+        out += identity
+        out = self.act(out)
+        return out
+
+class SpatialPerceptionBlockBatchNorm(nn.Module):
+    def __init__(self, in_c, out_c, dropout_p=0.1):
+        super().__init__()
+        self.offset_conv = nn.Conv2d(in_c, 2*3*3, 3, padding=1)
+        nn.init.constant_(self.offset_conv.weight, 0)
+        if self.offset_conv.bias is not None:
+            nn.init.constant_(self.offset_conv.bias, 0)
+
+        self.deform_conv = DeformConv2d(in_c, out_c, 3, padding=1)
+        self.bn = nn.BatchNorm2d(out_c)
+        self.dcse = DCSELayerBatchNorm(out_c)
+        self.dropout = nn.Dropout2d(p=dropout_p)
+        self.act = nn.ReLU(inplace=True)
+
+        self.downsample = None
+        if in_c != out_c:
+            self.downsample = nn.Sequential(
+                nn.Conv2d(in_c, out_c, 1, bias=False),
+                nn.BatchNorm2d(out_c)
+            )
+
+    def forward(self, x):
+        identity = x
+        offsets = self.offset_conv(x)
+        out = self.deform_conv(x, offsets)
+        out = self.bn(out)
+        out = self.dcse(out)
+        out = self.dropout(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out += identity
+        out = self.act(out)
+        return out
+
+class LandslideNet(nn.Module): 
+    def __init__(self, num_bands, num_classes=2, groups=8):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(num_bands, 64, 3, padding=1, bias=False),
+            nn.GroupNorm(groups, 64),
+            nn.ReLU(inplace=True)
+        )
+        self.spb1 = SpatialPerceptionBlock(64, 128, dropout_p=0.1, groups=groups) 
+        self.spb2 = SpatialPerceptionBlock(128, 256, dropout_p=0.15, groups=groups) 
+        self.spb3 = SpatialPerceptionBlock(256, 512, dropout_p=0.2, groups=groups) 
+        
+        self.pool1 = nn.MaxPool2d(2, 2)
+        self.pool2 = nn.MaxPool2d(2, 2)
+        self.pool3 = nn.MaxPool2d(2, 2)
+        
+        self.dropout = nn.Dropout2d(p=0.3)
+        self.dropout_dec = nn.Dropout2d(p=0.2)
+        
+        self.lat_conv3 = nn.Conv2d(512, 256, 1)
+        self.lat_conv2 = nn.Conv2d(256, 256, 1)
+        self.lat_conv1 = nn.Conv2d(128, 256, 1)
+        self.smooth_conv = nn.Conv2d(256, 256, 3, padding=1)
+        
+        self.dec_conv1 = nn.Sequential(
+            DSConv(256 + 64, 128, groups=groups),
+            self.dropout_dec,
+            DSConv(128, 128, groups=groups)
+        )
+        self.dec_conv2 = nn.Sequential(
+            DSConv(128 + 64, 64, groups=groups),
+            self.dropout_dec,
+            DSConv(64, 64, groups=groups)
+        )
+        self.final_conv = nn.Conv2d(64, num_classes, 1)
+        
+    def forward(self, x):
+        x0 = self.conv(x)
+        x0_pool = F.max_pool2d(x0, 2, 2)
+        
+        x1_pre = self.spb1(x0_pool)
+        x1_pre = self.dropout(x1_pre)
+        x1 = self.pool1(x1_pre)
+        
+        x2_pre = self.spb2(x1)
+        x2_pre = self.dropout(x2_pre)
+        x2 = self.pool2(x2_pre)
+        
+        x3_pre = self.spb3(x2)
+        x3 = self.pool3(x3_pre) 
+        
+        c3_lat = self.lat_conv3(x3_pre)
+        c2_lat = self.lat_conv2(x2_pre)
+        c3_up = F.interpolate(c3_lat, size=c2_lat.shape[2:], mode='bilinear', align_corners=True)
+        p2 = c3_up + c2_lat
+        
+        c1_lat = self.lat_conv1(x1_pre)
+        p2_up = F.interpolate(p2, size=c1_lat.shape[2:], mode='bilinear', align_corners=True)
+        p1 = p2_up + c1_lat
+        
+        fused_features = self.smooth_conv(p1)
+        
+        up1 = F.interpolate(fused_features, size=x0_pool.shape[2:], mode='bilinear', align_corners=True)
+        concat1 = torch.cat([up1, x0_pool], dim=1)
+        dec1 = self.dec_conv1(concat1)
+        
+        up2 = F.interpolate(dec1, size=x0.shape[2:], mode='bilinear', align_corners=True)
+        concat2 = torch.cat([up2, x0], dim=1)
+        dec2 = self.dec_conv2(concat2)
+        
+        output = self.final_conv(dec2)
+        return output
+
+class LandslideNetBatchNorm(nn.Module):
+    """Legacy BatchNorm variant used by older saved checkpoints."""
+    def __init__(self, num_bands, num_classes=2):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(num_bands, 64, 3, padding=1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True)
+        )
+        self.spb1 = SpatialPerceptionBlockBatchNorm(64, 128, dropout_p=0.1)
+        self.spb2 = SpatialPerceptionBlockBatchNorm(128, 256, dropout_p=0.15)
+        self.spb3 = SpatialPerceptionBlockBatchNorm(256, 512, dropout_p=0.2)
+
+        self.pool1 = nn.MaxPool2d(2, 2)
+        self.pool2 = nn.MaxPool2d(2, 2)
+        self.pool3 = nn.MaxPool2d(2, 2)
+
+        self.dropout = nn.Dropout2d(p=0.3)
+        self.dropout_dec = nn.Dropout2d(p=0.2)
+
+        self.lat_conv3 = nn.Conv2d(512, 256, 1)
+        self.lat_conv2 = nn.Conv2d(256, 256, 1)
+        self.lat_conv1 = nn.Conv2d(128, 256, 1)
+        self.smooth_conv = nn.Conv2d(256, 256, 3, padding=1)
+
+        self.dec_conv1 = nn.Sequential(
+            DSConvBatchNorm(256 + 64, 128),
+            self.dropout_dec,
+            DSConvBatchNorm(128, 128)
+        )
+        self.dec_conv2 = nn.Sequential(
+            DSConvBatchNorm(128 + 64, 64),
+            self.dropout_dec,
+            DSConvBatchNorm(64, 64)
+        )
+        self.final_conv = nn.Conv2d(64, num_classes, 1)
+
+    def forward(self, x):
+        x0 = self.conv(x)
+        x0_pool = F.max_pool2d(x0, 2, 2)
+
+        x1_pre = self.spb1(x0_pool)
+        x1_pre = self.dropout(x1_pre)
+        x1 = self.pool1(x1_pre)
+
+        x2_pre = self.spb2(x1)
+        x2_pre = self.dropout(x2_pre)
+        x2 = self.pool2(x2_pre)
+
+        x3_pre = self.spb3(x2)
+        x3 = self.pool3(x3_pre)
+
+        c3_lat = self.lat_conv3(x3_pre)
+        c2_lat = self.lat_conv2(x2_pre)
+        c3_up = F.interpolate(c3_lat, size=c2_lat.shape[2:], mode='bilinear', align_corners=True)
+        p2 = c3_up + c2_lat
+
+        c1_lat = self.lat_conv1(x1_pre)
+        p2_up = F.interpolate(p2, size=c1_lat.shape[2:], mode='bilinear', align_corners=True)
+        p1 = p2_up + c1_lat
+
+        fused_features = self.smooth_conv(p1)
+
+        up1 = F.interpolate(fused_features, size=x0_pool.shape[2:], mode='bilinear', align_corners=True)
+        concat1 = torch.cat([up1, x0_pool], dim=1)
+        dec1 = self.dec_conv1(concat1)
+
+        up2 = F.interpolate(dec1, size=x0.shape[2:], mode='bilinear', align_corners=True)
+        concat2 = torch.cat([up2, x0], dim=1)
+        dec2 = self.dec_conv2(concat2)
+
+        output = self.final_conv(dec2)
+        return output
+
