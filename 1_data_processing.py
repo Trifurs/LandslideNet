@@ -1,77 +1,51 @@
-import sys
-import os
-import xml.etree.ElementTree as ET
-from utils import *
+#!/usr/bin/env python3
+"""Step 1: build frozen, label-independent physiographic macro-regions."""
+
+from __future__ import annotations
+
+import argparse
+
+from utils.progress import configure_progress, console
+from utils.regions import build_from_xml
 
 
-def normalize_path(value):
-    value = str(value).strip()
-    if os.name != 'nt' and (value.startswith('/') or value.startswith('~') or value.startswith('.')):
-        value = os.path.expanduser(value).replace('\\', '/')
-    return value
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description=(
+            "Build aligned continuous terrain-derived macro-regions. Landslide labels, "
+            "DWSS products, and predictions are never read by this step."
+        )
+    )
+    parser.add_argument("xml", help="Project XML configuration.")
+    parser.add_argument(
+        "--force",
+        "--force-regions",
+        dest="force",
+        action="store_true",
+        help="Replace products only after an intentional regionalization change.",
+    )
+    parser.add_argument(
+        "--progress",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="显示实时进度条（默认开启，可用 --no-progress 关闭）。",
+    )
+    # Retained as a harmless compatibility alias for commands from the prior revision.
+    parser.add_argument("--regions-only", action="store_true", help=argparse.SUPPRESS)
+    return parser.parse_args(argv)
 
 
-def get_argv(xml_file):
-    """Extract preprocessing parameters from XML config"""
-    argv_names = [
-        'input_factors_dir', 'input_labels_dir',
-        'output_factors_dir', 'output_labels_dir',
-        'crop_size', 'overlap'
-    ]
-    argv_values = []
-    root = ET.parse(xml_file).getroot()
-    
-    for argv_name in argv_names:
-        for param in root.findall('param'):
-            if param.find('name').text == argv_name:
-                argv_values.append(normalize_path(param.find('value').text))
-                break
-        else:
-            raise ValueError(f"Parameter {argv_name} not found")
-    return argv_values
+def main(argv=None):
+    args = parse_args(argv)
+    configure_progress(args.progress)
+    console(f"步骤 1/3：构建或核验连续宏区域；配置={args.xml}")
+    result = build_from_xml(args.xml, overwrite=args.force)
+    for count, path in sorted(result["built"].items()):
+        console(f"已构建 K={count}：{path}")
+    for count, path in sorted(result["skipped"].items()):
+        console(f"已核验 K={count}：{path}")
+    console("步骤 1/3 完成。")
 
 
-def main(input_factors_dir, input_labels_dir, output_factors_dir, 
-         output_labels_dir, crop_size, overlap):
-    """Main landslide data preprocessing workflow"""
-    # Convert numeric parameters
-    crop_size = int(crop_size)
-    overlap = int(overlap)
-
-    # Execute raster cropping
-    crop_all_rasters(input_factors_dir, output_factors_dir, crop_size, overlap)
-    crop_all_rasters(input_labels_dir, output_labels_dir, crop_size, overlap)
-
-    # Remove invalid data
-    move_black_images_in_all_subfolders(output_factors_dir)
-    move_black_images_in_all_subfolders(output_labels_dir)
-
-    # Ensure data consistency
-    move_missing_images_to_black(output_factors_dir)
-    move_missing_images_to_black(output_labels_dir)
-
-
-if __name__ == '__main__':
-    try:
-        # Parameter validation
-        if len(sys.argv) < 2:
-            raise RuntimeError("Missing XML config file parameter")
-            
-        config_path = sys.argv[1]
-        params = get_argv(config_path)
-        
-        if len(params) != 6:
-            raise ValueError("Mismatched configuration parameters count")
-            
-        # Execute main workflow
-        main(*params)
-        
-        # Output success status
-        print('<process_status>0</process_status>')
-        print('<process_log>success</process_log>')
-        
-    except Exception as e:
-        # Error handling
-        error_msg = str(e).replace('\n', ' ').replace('\t', ' ')
-        print('<process_status>1</process_status>')
-        print(f'<process_log>{error_msg}</process_log>')
+if __name__ == "__main__":
+    main()

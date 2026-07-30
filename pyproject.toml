@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "landslidenet-regional"
+version = "2.1.0"
+description = "Leakage-safe continuous-region landslide susceptibility experiments"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "scipy",
+  "pandas",
+  "scikit-learn",
+  "rasterio",
+  "torch",
+  "torchvision",
+  "tqdm",
+  "joblib",
+  "jenkspy",
+]
+
+[project.optional-dependencies]
+paper = ["catboost", "lightgbm", "matplotlib"]
+interpretability = ["shap", "matplotlib"]
+
+[tool.setuptools.packages.find]
+include = ["landslidenet*", "utils*", "Tools*"]

@@ -1,138 +1,87 @@
-<startParam name="滑坡敏感性制图" language="python" version="cp311" system="win_amd64" description="使用卷积神经网络进行大尺度滑坡敏感性制图">
-    <param>
-        <name>input_factors_dir</name>
-        <description>输入影响因子文件</description>
-        <inout>in</inout>
-        <type>folder</type>
-        <info>20个滑坡影响因子（已归一化）的tif文件所在目录</info>
-        <value>/home/whu/桌面/myData/LSM\origin\factors</value>
-    </param>
-    <param>
-        <name>input_labels_dir</name>
-        <description>输入标签文件夹</description>
-        <inout>in</inout>
-        <type>folder</type>
-        <info>包含滑坡点（1）和非滑坡点（2）的tif影像</info>
-        <value>/home/whu/桌面/myData/LSM\origin\label</value>
-    </param>
-    <param>
-        <name>output_factors_dir</name>
-        <description>输出经预处理后影响因子的文件夹</description>
-        <inout>out</inout>
-        <type>folder</type>
-        <info>经裁剪等处理后的训练测试的特征影像所在目录</info>
-        <value>/home/whu/桌面/myData/LSM\origin\cut\factor</value>
-    </param>
-    <param>
-        <name>output_labels_dir</name>
-        <description>输出经预处理后标签的文件夹</description>
-        <inout>out</inout>
-        <type>folder</type>
-        <info>经裁剪等处理后的训练测试的标签所在目录</info>
-        <value>/home/whu/桌面/myData/LSM\origin\cut\label</value>
-    </param>
-    <param>
-        <name>crop_size</name>
-        <description>影像裁剪尺寸</description>
-        <inout>in</inout>
-        <type>int</type>
-        <info>裁剪后影像的长和宽</info>
-        <value>512</value>
-    </param>
-    <param>
-        <name>overlap</name>
-        <description>裁剪时的重叠尺寸</description>
-        <inout>in</inout>
-        <type>int</type>
-        <info>裁剪时相邻影像之间重叠的像素数量</info>
-        <value>64</value>
-    </param>
-    <param>
-        <name>train_output</name>
-        <description>训练日志和权重的输出文件夹</description>
-        <inout>out</inout>
-        <type>folder</type>
-        <info>训练日志和权重的输出文件夹</info>
-        <value>/home/whu/桌面/myResult/LandslideNet\pth</value>
-    </param>
-    <param>
-        <name>num_epochs</name>
-        <description>训练轮数</description>
-        <inout>in</inout>
-        <type>int</type>
-        <info>训练轮数</info>
-        <value>2000</value>
-    </param>
-    <param>
-        <name>lr</name>
-        <description>学习率</description>
-        <inout>in</inout>
-        <type>float</type>
-        <info>学习率</info>
-        <value>0.001</value>
-    </param>
-    <param>
-        <name>weight_decay</name>
-        <description>L2正则化</description>
-        <inout>in</inout>
-        <type>float</type>
-        <info>L2正则化</info>
-        <value>0.001</value>
-    </param>
-    <param>
-        <name>device_ids</name>
-        <description>GPU编号</description>
-        <inout>in</inout>
-        <type>list</type>
-        <info>模型训练时采用了两张GPU</info>
-        <value>[0, 1]</value>
-    </param>
-    <param>
-        <name>patience</name>
-        <description>早停耐心参数</description>
-        <inout>in</inout>
-        <type>int</type>
-        <info>早停耐心参数</info>
-        <value>60</value>
-    </param>
-    <param>
-        <name>batch_size</name>
-        <description>批处理大小</description>
-        <inout>in</inout>
-        <type>int</type>
-        <info>批处理大小</info>
-        <value>8</value>
-    </param>
-    <param>
-        <name>num_workers</name>
-        <description>数据加载器的工作线程数</description>
-        <inout>in</inout>
-        <type>int</type>
-        <info>数据加载器的工作线程数</info>
-        <value>8</value>
-    </param>
-    <param>
-        <name>num_bands</name>
-        <description>输入影像的波段数</description>
-        <inout>in</inout>
-        <type>int</type>
-        <info>输入影像的波段数，即影响因子的数目</info>
-        <value>20</value>
-    </param>
-    <param>
-        <name>LSM_dir</name>
-        <description>滑坡敏感性地图输出文件夹</description>
-        <inout>out</inout>
-        <type>folder</type>
-        <info>滑坡敏感性地图输出文件夹，还未处理接缝</info>
-        <value>/home/whu/桌面/myResult/LandslideNet\LSM</value>
-    </param>
-    <param>
-        <name>mosaic_map</name>
-        <description>镶嵌消除接缝后的滑坡敏感性地图输出路径</description>
-        <inout>out</inout>
-        <type>file</type>
-        <info>镶嵌消除接缝后的滑坡敏感性地图输出路径</info>
-        <value>/home/whu/桌面/myResult/LandslideNet\LSM\mosaic\landslide_susceptibility_map.tif</value>
-    </param>
+<?xml version="1.0" encoding="UTF-8"?>
+<startParam name="LandslideNet regional experiments" version="2.1">
+    <!-- Aligned full-resolution inputs -->
+    <param><name>input_factors_dir</name><value>/home/whu/桌面/myData/LSM/origin/factors</value></param>
+    <param><name>landslide_inventory</name><value>/home/whu/桌面/myData/LSM/origin/Landslide_label_buffer.tif</value></param>
+    <param><name>num_bands</name><value>20</value></param>
+
+    <!-- Frozen label-independent terrain-derived physiographic regions -->
+    <param><name>macro_region_output</name><value>/home/whu/桌面/myData/LSM/origin/macro_regions/terrain_macro_regions_k{count}.tif</value></param>
+    <param><name>macro_region_count</name><value>5</value></param>
+    <param><name>macro_region_factors</name><value>DEM,Slope,Relief,Roughness,TPI,TWI</value></param>
+    <param><name>macro_region_downsample</name><value>64</value></param>
+    <param><name>macro_region_spatial_weight</name><value>1.5</value></param>
+    <param><name>macro_region_sensitivity_counts</name><value>[4,5,6]</value></param>
+    <param><name>macro_region_minimum_fraction</name><value>0.03</value></param>
+    <param><name>macro_region_maximum_excluded_fraction</name><value>0.01</value></param>
+    <param><name>macro_region_maximum_disconnected_fraction</name><value>0.005</value></param>
+    <param><name>macro_region_write_plot</name><value>true</value></param>
+
+    <!-- Fold-fitted feature processing. Never fit these mappings on validation/test regions. -->
+    <param><name>frequency_ratio_factors</name><value>Geology:176,Soil:36,Earthquake:5</value></param>
+    <param><name>frequency_ratio_smoothing</name><value>0.5</value></param>
+    <param><name>frequency_ratio_log2_clip</name><value>4.0</value></param>
+
+    <!-- Nested continuous-region split and low-support handling -->
+    <param><name>regional_validation_strategy</name><value>support_aware</value></param>
+    <param><name>regional_min_inner_training_positives</name><value>500</value></param>
+    <param><name>regional_preferred_validation_positives</name><value>100</value></param>
+    <param><name>regional_min_region_positives</name><value>1</value></param>
+    <param><name>regional_balance_training_regions</name><value>true</value></param>
+    <param><name>regional_balance_power</name><value>0.5</value></param>
+    <param><name>regional_low_support_warning</name><value>30</value></param>
+    <param><name>regional_adequate_support</name><value>100</value></param>
+    <param><name>regional_bootstrap_replicates</name><value>1000</value></param>
+    <param><name>regional_bootstrap_confidence</name><value>0.95</value></param>
+
+    <!-- Reviewer control: only the training-negative rule differs between arms. -->
+    <param><name>experiment_sampling_methods</name><value>dwss,random</value></param>
+    <param><name>negative_ratio</name><value>1.0</value></param>
+    <param><name>dwss_candidate_multiplier</name><value>10</value></param>
+    <param><name>dwss_candidate_minimum</name><value>10000</value></param>
+    <param><name>dwss_candidate_maximum</name><value>100000</value></param>
+    <param><name>dwss_theta_min</name><value>0.55</value></param>
+    <param><name>dwss_n_strata</name><value>3</value></param>
+    <param><name>dwss_weight_power</name><value>1.0</value></param>
+    <param><name>dwss_min_per_stratum</name><value>5</value></param>
+    <param><name>dwss_max_prototypes</name><value>2000</value></param>
+    <param><name>dwss_kde_chunk_size</name><value>2048</value></param>
+
+    <!--
+      Unified model selection. Use one model name, a comma-separated list,
+      machine_learning/deep_learning/ablation/proposed, or all.
+    -->
+    <param><name>model</name><value>landslidenet</value></param>
+    <param><name>experiment_seed</name><value>20250609</value></param>
+    <param><name>selection_metric</name><value>f1</value></param>
+    <param><name>threshold_metric</name><value>f1</value></param>
+    <param><name>evaluation_tta</name><value>false</value></param>
+    <param><name>classical_iterations</name><value>500</value></param>
+    <param><name>classical_n_jobs</name><value>8</value></param>
+
+    <!-- Shared deep-model training controls -->
+    <param><name>crop_size</name><value>512</value></param>
+    <param><name>batch_size</name><value>8</value></param>
+    <param><name>num_workers</name><value>8</value></param>
+    <param><name>num_epochs</name><value>300</value></param>
+    <param><name>lr</name><value>0.001</value></param>
+    <param><name>weight_decay</name><value>0.001</value></param>
+    <param><name>patience</name><value>30</value></param>
+    <param><name>device_ids</name><value>[0,1]</value></param>
+    <param><name>raster_chunk_size</name><value>1024</value></param>
+    <param><name>feature_tile_size</name><value>1024</value></param>
+
+    <!-- A timestamped subdirectory is created unless an explicit output directory is supplied. -->
+    <param><name>train_output</name><value>/home/whu/桌面/myResult/LandslideNet/regional_experiments</value></param>
+
+    <!-- Step 3: full is the default deployment product; oof is validation-only. -->
+    <param><name>prediction_map_type</name><value>full</value></param>
+    <param><name>prediction_write_binary</name><value>false</value></param>
+    <param><name>prediction_tile_size</name><value>1024</value></param>
+
+    <!--
+      Deep models must use MSMF. These five strides correspond to the upstream
+      overlaps 128,80,55,199,175 for a 512-pixel window. Classical models bypass MSMF.
+    -->
+    <param><name>msmf_strides</name><value>[384,432,457,313,337]</value></param>
 </startParam>
