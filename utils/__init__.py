@@ -1,6 +1,6 @@
 """Shared implementation for the three LandslideNet project entry scripts."""
 
-from landslidenet import LandslideNet
+from models import LandslideNet
 
 from .model_registry import (
     MODEL_GROUPS,
@@ -18,4 +18,4 @@ __all__ = [
     "canonical_model_name",
     "expand_model_selection",
 ]
-__version__ = "2.1.0"
+__version__ = "2.2.0"

@@ -11,8 +11,8 @@ manuscript.  Weighted blending inside each stride is an implementation
 improvement: it avoids arbitrary last-window overwriting before the cross-stride
 median is calculated.
 
-This map is NOT an out-of-fold validation product and must not be used to report
-test accuracy.  It is a deployment/CV-ensemble susceptibility surface.
+This map is a deployment/CV-ensemble susceptibility surface and is not used to
+report held-out test accuracy.
 """
 
 from __future__ import annotations
@@ -689,7 +689,6 @@ def run_deep_msmf(args):
     experiment_dir, xml_params = resolve_experiment_dir(
         args.source,
         explicit_experiment_dir=args.experiment_dir,
-        allow_partial=False,
     )
     protocol = _load_json(experiment_dir / "validation_protocol.json")
     registry = _load_json(experiment_dir / "model_registry.json")
@@ -936,9 +935,9 @@ def run_deep_msmf(args):
         },
         "valid_factor_domain_cells": int(valid_cells),
         "scientific_interpretation": (
-            "Deployment-oriented seamless susceptibility map. This is not an OOF "
-            "validation map and must not be used to compute or report held-out test "
-            "accuracy. The fold ensemble avoids selecting a single regional fold model, "
+            "Deployment-oriented seamless susceptibility map. It must not be used "
+            "to compute or report held-out test accuracy. The fold ensemble avoids "
+            "selecting a single regional fold model, "
             "while MSMF suppresses sliding-window boundary artifacts."
         ),
     }

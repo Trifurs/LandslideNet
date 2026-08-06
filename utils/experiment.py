@@ -57,6 +57,7 @@ from .data import (
     collect_positive_points,
     compute_region_factor_ranges,
     compute_training_category_counts,
+    is_vector_inventory,
     list_factor_paths,
     make_sparse_loader,
     parse_frequency_ratio_specs,
@@ -168,7 +169,8 @@ def software_environment():
     packages = {}
     for package in (
         "numpy", "scipy", "pandas", "scikit-learn", "rasterio", "torch",
-        "torchvision", "jenkspy", "catboost", "lightgbm",
+        "torchvision", "jenkspy", "catboost", "lightgbm", "geopandas",
+        "pyogrio", "shapely",
     ):
         try:
             packages[package] = importlib.metadata.version(package)
@@ -259,17 +261,72 @@ def configure_experiment_args(args, params):
         ("candidate_multiplier", "dwss_candidate_multiplier", float, 10.0),
         ("candidate_minimum", "dwss_candidate_minimum", int, 10000),
         ("candidate_maximum", "dwss_candidate_maximum", int, 100000),
+        (
+            "training_candidate_minimum",
+            "dwss_training_candidate_minimum",
+            int,
+            200000,
+        ),
+        (
+            "training_candidate_maximum",
+            "dwss_training_candidate_maximum",
+            int,
+            200000,
+        ),
+        (
+            "adaptive_candidate_maximum",
+            "dwss_adaptive_candidate_maximum",
+            int,
+            15000000,
+        ),
+        ("adaptive_batch_size", "dwss_adaptive_batch_size", int, 250000),
+        ("screening_neighbors", "dwss_screening_neighbors", int, 64),
         ("theta_min", "dwss_theta_min", float, 0.55),
         ("n_strata", "dwss_n_strata", int, 3),
         ("weight_power", "dwss_weight_power", float, 1.0),
-        ("min_per_stratum", "dwss_min_per_stratum", int, 5),
-        ("max_prototypes", "dwss_max_prototypes", int, 2000),
+        ("min_per_stratum", "dwss_min_per_stratum", int, 0),
+        ("max_prototypes", "dwss_max_prototypes", int, 0),
         ("kde_chunk_size", "dwss_kde_chunk_size", int, 2048),
         ("raster_chunk_size", "raster_chunk_size", int, 1024),
         ("feature_tile_size", "feature_tile_size", int, 1024),
         ("seed", "experiment_seed", int, 20250609),
-        ("selection_metric", "selection_metric", str, "f1"),
+        ("selection_metric", "selection_metric", str, "auc"),
         ("threshold_metric", "threshold_metric", str, "f1"),
+        (
+            "threshold_score_tolerance",
+            "threshold_score_tolerance",
+            float,
+            0.0,
+        ),
+        ("selection_min_delta", "selection_min_delta", float, 0.0),
+        ("minimum_epochs", "minimum_epochs", int, 1),
+        ("lr_warmup_epochs", "lr_warmup_epochs", int, 0),
+        ("lr_plateau_patience", "lr_plateau_patience", int, 10),
+        ("lr_plateau_factor", "lr_plateau_factor", float, 0.5),
+        ("minimum_lr", "minimum_lr", float, 1e-6),
+        (
+            "domain_risk_variance_weight",
+            "domain_risk_variance_weight",
+            float,
+            0.0,
+        ),
+        (
+            "domain_risk_warmup_epochs",
+            "domain_risk_warmup_epochs",
+            int,
+            0,
+        ),
+        ("training_context_views", "training_context_views", int, 2),
+        (
+            "max_supervised_points_per_training_tile",
+            "max_supervised_points_per_training_tile",
+            int,
+            512,
+        ),
+        ("ema_decay", "ema_decay", float, 0.99),
+        ("ema_start_epoch", "ema_start_epoch", int, 1),
+        ("augmentation_mode", "augmentation_mode", str, "aspect_safe_d4"),
+        ("aspect_period", "aspect_period", float, 1.0),
         ("classical_iterations", "classical_iterations", int, 500),
         ("classical_n_jobs", "classical_n_jobs", int, 8),
     )
@@ -292,8 +349,70 @@ def configure_experiment_args(args, params):
         raise ValueError("DWSS candidate multiplier/minimum are invalid.")
     if args.candidate_maximum and args.candidate_maximum < 1:
         raise ValueError("DWSS candidate maximum must be 0 (unbounded) or positive.")
+    if args.training_candidate_minimum < 1:
+        raise ValueError("DWSS training-candidate minimum must be positive.")
+    if (
+        args.training_candidate_maximum
+        and args.training_candidate_maximum < args.training_candidate_minimum
+    ):
+        raise ValueError(
+            "DWSS training-candidate maximum cannot be smaller than its minimum."
+        )
+    if (
+        args.adaptive_candidate_maximum < 1
+        or args.adaptive_batch_size < 1
+        or args.screening_neighbors < 1
+    ):
+        raise ValueError(
+            "DWSS adaptive candidate maximum, batch size, and screening-neighbor "
+            "count must be positive."
+        )
     if args.max_prototypes < 0 or args.classical_iterations < 1:
         raise ValueError("Prototype cap/estimator iteration configuration is invalid.")
+    if not 0 <= args.threshold_score_tolerance < 1:
+        raise ValueError("threshold_score_tolerance must be in [0, 1).")
+    if args.selection_min_delta < 0:
+        raise ValueError("selection_min_delta cannot be negative.")
+    if args.minimum_epochs < 1 or args.lr_plateau_patience < 1:
+        raise ValueError("minimum_epochs and lr_plateau_patience must be positive.")
+    if args.lr_warmup_epochs < 0 or args.domain_risk_warmup_epochs < 0:
+        raise ValueError("Warm-up epoch counts cannot be negative.")
+    if not 0 < args.lr_plateau_factor < 1 or args.minimum_lr <= 0:
+        raise ValueError("Invalid plateau LR factor/minimum.")
+    if args.domain_risk_variance_weight < 0:
+        raise ValueError("domain_risk_variance_weight cannot be negative.")
+    if args.training_context_views not in {1, 2, 4}:
+        raise ValueError("training_context_views must be one of 1, 2, or 4.")
+    if args.max_supervised_points_per_training_tile < 0:
+        raise ValueError(
+            "max_supervised_points_per_training_tile cannot be negative."
+        )
+    if not 0 <= args.ema_decay < 1 or args.ema_start_epoch < 1:
+        raise ValueError("EMA decay must be in [0, 1), and its start epoch positive.")
+    if args.augmentation_mode not in {"none", "aspect_safe_d4"}:
+        raise ValueError("augmentation_mode must be none or aspect_safe_d4.")
+    if args.aspect_period <= 0:
+        raise ValueError("aspect_period must be positive.")
+    if not np.isclose(args.negative_ratio, 1.0):
+        raise ValueError(
+            "The manuscript uses a 1:1 positive/negative design; negative_ratio must be 1."
+        )
+    if not np.isclose(args.theta_min, 0.55):
+        raise ValueError(
+            "The manuscript DWSS threshold is theta_min=0.55."
+        )
+    if args.n_strata != 3:
+        raise ValueError(
+            "The manuscript DWSS uses exactly three natural-break strata."
+        )
+    if not np.isclose(args.weight_power, 1.0):
+        raise ValueError(
+            "The manuscript DWSS allocation uses unpowered stratum means."
+        )
+    if args.min_per_stratum != 0:
+        raise ValueError(
+            "The manuscript DWSS allocation has no per-stratum minimum."
+        )
 
 
 def load_region_names(path):
@@ -409,13 +528,31 @@ def select_region_points(points, features, region_ids):
     return points[mask], features[mask]
 
 
-def sample_candidate_pool(args, factor_paths, allowed_regions, positive_count, seed):
+def sample_candidate_pool(
+    args,
+    factor_paths,
+    allowed_regions,
+    positive_count,
+    seed,
+    split,
+):
+    use_training_pool = split == "train" and "dwss" in args.sampling_methods
+    minimum = (
+        args.training_candidate_minimum
+        if use_training_pool
+        else args.candidate_minimum
+    )
+    maximum = (
+        args.training_candidate_maximum
+        if use_training_pool
+        else args.candidate_maximum
+    )
     required, requested = candidate_pool_target(
         positive_count,
         args.negative_ratio,
         args.candidate_multiplier,
-        args.candidate_minimum,
-        args.candidate_maximum,
+        minimum,
+        maximum,
     )
     points, total_background = sample_background_points(
         args.inventory,
@@ -446,8 +583,235 @@ def sample_candidate_pool(args, factor_paths, allowed_regions, positive_count, s
         "candidate_pool_drawn": int(drawn_count),
         "candidate_pool_factor_valid": int(len(points)),
         "required_negative_samples": int(required),
+        "split": split,
+        "training_dwss_initial_pool": bool(use_training_pool),
     }
     return points, features, required, audit
+
+
+def augment_dwss_training_candidates(
+    args,
+    factor_paths,
+    allowed_regions,
+    train_data,
+    dwss,
+    seed,
+):
+    """Fill strict DWSS stratum quotas with uniform proposals and safe pruning.
+
+    The initial candidate pool fits the fold-specific natural breaks. If a
+    stratum cannot meet Eq. (1), additional background pixels are proposed
+    uniformly. A Gaussian-kernel density upper bound rejects only pixels that
+    provably cannot enter any currently deficient stratum; all survivors use
+    the original exact KDE before being retained.
+    """
+    initial_points = np.asarray(train_data["candidate_points"], dtype=np.int64)
+    initial_raw = np.asarray(train_data["candidate_raw"], dtype=np.float32)
+    initial_divergence = np.asarray(
+        dwss.training_candidate_divergence,
+        dtype=np.float64,
+    )
+    if len(initial_points) != len(initial_divergence):
+        raise RuntimeError("Initial DWSS points and divergence values are misaligned.")
+
+    total = int(train_data["required_negatives"])
+    status = dwss.allocation_status(initial_divergence, total)
+    base_audit = {
+        "initial_candidate_count": int(len(initial_points)),
+        "initial_eligible_count": int(status["eligible_count"]),
+        "initial_target_counts": status["desired"].tolist(),
+        "initial_available_counts": status["available"].tolist(),
+        "initial_deficit_counts": status["deficit"].tolist(),
+        "adaptive_search_used": bool(np.any(status["deficit"])),
+        "proposal_rule": (
+            "uniform_without_replacement_within_the_adaptive_draw_from_the_same "
+            "inner-training background; overlaps with the initial draw are removed"
+        ),
+        "screening_rule": (
+            "k-nearest Gaussian-kernel upper bound; every retained candidate "
+            "receives exact joint-KDE evaluation"
+        ),
+        "screening_is_false_negative_safe": True,
+        "screening_neighbors": int(args.screening_neighbors),
+        "processing_batch_size": int(args.adaptive_batch_size),
+        "cross_stratum_quota_redistribution": False,
+    }
+    train_data["base_uniform_candidate_count"] = int(len(initial_points))
+    if not np.any(status["deficit"]):
+        train_data["dwss_candidate_divergence"] = initial_divergence
+        dwss.selection_candidate_count = int(len(initial_divergence))
+        base_audit.update({
+            "adaptive_candidates_requested": 0,
+            "adaptive_candidates_processed": 0,
+            "adaptive_candidates_factor_valid": 0,
+            "adaptive_candidates_passing_safe_screen": 0,
+            "adaptive_candidates_retained": 0,
+            "final_target_counts": status["desired"].tolist(),
+            "final_available_counts": status["available"].tolist(),
+            "strict_manuscript_allocation_satisfied": True,
+        })
+        train_data["candidate_audit"]["dwss_adaptive_search"] = base_audit
+        return
+
+    maximum = min(
+        int(args.adaptive_candidate_maximum),
+        int(train_data["candidate_audit"]["total_background_cells"]),
+    )
+    initial_count = max(len(initial_divergence), 1)
+    estimated = []
+    for deficit, available in zip(status["deficit"], status["available"]):
+        if deficit <= 0:
+            continue
+        if available <= 0:
+            estimated.append(maximum)
+        else:
+            observed_rate = float(available) / initial_count
+            # A 2x reserve absorbs Monte-Carlo variation and small shifts in
+            # conditional stratum means after additional uniform draws.
+            estimated.append(int(np.ceil(2.0 * float(deficit) / observed_rate)))
+    requested = min(
+        maximum,
+        max(int(args.adaptive_batch_size), max(estimated, default=maximum)),
+    )
+    if requested < 1:
+        raise RuntimeError(
+            "DWSS strata are deficient but the adaptive candidate budget is empty."
+        )
+
+    proposal_points, total_background = sample_background_points(
+        args.inventory,
+        args.regions,
+        allowed_regions,
+        requested,
+        seed,
+        positive_value=args.positive_value,
+        chunk_size=args.raster_chunk_size,
+    )
+    proposal_rng = np.random.default_rng(seed + 1)
+    proposal_rng.shuffle(proposal_points)
+
+    retained_points = []
+    retained_raw = []
+    retained_divergence = []
+    known_coordinates = {
+        (int(point[0]), int(point[1]))
+        for point in initial_points
+    }
+    processed = 0
+    factor_valid_count = 0
+    screened_count = 0
+    exact_count = 0
+
+    for start in range(0, len(proposal_points), int(args.adaptive_batch_size)):
+        combined_divergence = np.concatenate(
+            [initial_divergence, *retained_divergence]
+        )
+        dwss.refresh_stratum_statistics(combined_divergence)
+        status = dwss.allocation_status(combined_divergence, total)
+        deficient = np.flatnonzero(status["deficit"] > 0)
+        if not len(deficient):
+            break
+
+        stop = min(start + int(args.adaptive_batch_size), len(proposal_points))
+        point_batch = proposal_points[start:stop]
+        processed += len(point_batch)
+        raw_batch, factor_valid = read_point_features(
+            factor_paths,
+            point_batch,
+            tile_size=args.feature_tile_size,
+        )
+        point_batch = point_batch[factor_valid]
+        raw_batch = raw_batch[factor_valid]
+        factor_valid_count += len(point_batch)
+        if not len(point_batch):
+            continue
+
+        screen = dwss.screen_for_strata(
+            raw_batch,
+            int(deficient.max()),
+            neighbors=args.screening_neighbors,
+        )
+        screened_count += int(np.count_nonzero(screen))
+        if not np.any(screen):
+            continue
+
+        screened_points = point_batch[screen]
+        screened_raw = raw_batch[screen]
+        screened_divergence = dwss.divergence(screened_raw)
+        exact_count += len(screened_divergence)
+        eligible = screened_divergence >= dwss.theta_min
+        screened_strata = dwss.assign_strata(screened_divergence)
+        retain = eligible & np.isin(screened_strata, deficient)
+        if not np.any(retain):
+            continue
+
+        candidate_points = screened_points[retain]
+        candidate_raw = screened_raw[retain]
+        candidate_divergence = screened_divergence[retain]
+        novel = np.asarray(
+            [
+                (int(point[0]), int(point[1])) not in known_coordinates
+                for point in candidate_points
+            ],
+            dtype=bool,
+        )
+        if not np.any(novel):
+            continue
+        candidate_points = candidate_points[novel]
+        candidate_raw = candidate_raw[novel]
+        candidate_divergence = candidate_divergence[novel]
+        known_coordinates.update(
+            (int(point[0]), int(point[1]))
+            for point in candidate_points
+        )
+        retained_points.append(candidate_points)
+        retained_raw.append(candidate_raw)
+        retained_divergence.append(candidate_divergence)
+
+    combined_divergence = np.concatenate(
+        [initial_divergence, *retained_divergence]
+    )
+    dwss.refresh_stratum_statistics(combined_divergence)
+    final_status = dwss.allocation_status(combined_divergence, total)
+    if np.any(final_status["deficit"]):
+        raise RuntimeError(
+            "The configured adaptive DWSS budget cannot satisfy the strict "
+            "manuscript allocation. "
+            f"targets={final_status['desired'].tolist()}, "
+            f"available={final_status['available'].tolist()}, "
+            f"deficits={final_status['deficit'].tolist()}, "
+            f"processed={processed:,}, maximum={args.adaptive_candidate_maximum:,}. "
+            "Increase dwss_adaptive_candidate_maximum in the XML; quotas were not "
+            "redistributed."
+        )
+
+    if retained_points:
+        train_data["candidate_points"] = np.concatenate(
+            [initial_points, *retained_points],
+            axis=0,
+        )
+        train_data["candidate_raw"] = np.concatenate(
+            [initial_raw, *retained_raw],
+            axis=0,
+        )
+    train_data["dwss_candidate_divergence"] = combined_divergence
+    dwss.selection_candidate_count = int(len(combined_divergence))
+    base_audit.update({
+        "total_background_cells": int(total_background),
+        "adaptive_candidates_requested": int(requested),
+        "adaptive_candidates_processed": int(processed),
+        "adaptive_candidates_factor_valid": int(factor_valid_count),
+        "adaptive_candidates_passing_safe_screen": int(screened_count),
+        "adaptive_candidates_exact_kde": int(exact_count),
+        "adaptive_candidates_retained": int(
+            sum(len(values) for values in retained_points)
+        ),
+        "final_target_counts": final_status["desired"].tolist(),
+        "final_available_counts": final_status["available"].tolist(),
+        "final_deficit_counts": final_status["deficit"].tolist(),
+        "strict_manuscript_allocation_satisfied": True,
+    })
+    train_data["candidate_audit"]["dwss_adaptive_search"] = base_audit
 
 
 def method_negative_samples(method, split_data, dwss, args, seed,
@@ -479,18 +843,27 @@ def method_negative_samples(method, split_data, dwss, args, seed,
         elif method == "dwss":
             selected[split], diagnostics[split] = dwss.select(
                 points,
-                data["candidate_normalized"],
+                data["candidate_raw"],
                 total,
                 split_seed,
                 minimum_per_stratum=args.min_per_stratum,
-                precomputed_divergence=dwss.training_candidate_divergence,
+                precomputed_divergence=data.get(
+                    "dwss_candidate_divergence",
+                    dwss.training_candidate_divergence,
+                ),
             )
         else:
-            selected[split] = choose_random_points(points, total, split_seed)
+            base_count = int(data.get("base_uniform_candidate_count", len(points)))
+            selected[split] = choose_random_points(
+                points[:base_count],
+                total,
+                split_seed,
+            )
             diagnostics[split] = {
-                "candidate_pool": int(len(points)),
+                "candidate_pool": base_count,
                 "selected": int(len(selected[split])),
                 "selection": "uniform_without_replacement",
+                "adaptive_dwss_search_points_excluded": int(len(points) - base_count),
             }
     return selected, diagnostics
 
@@ -754,6 +1127,216 @@ def plot_macro_region_layout(path, regions_path, positives, region_ids, region_n
     plt.close(fig)
 
 
+def write_unified_five_fold_table(frame, output_dir):
+    """Write fold rows and per-model/per-arm five-fold summaries in one CSV."""
+    identity = ["model", "sampling_method", "fold", "test_region"]
+    duplicates = frame.duplicated(identity, keep=False)
+    if np.any(duplicates):
+        rows = frame.loc[duplicates, identity].to_dict(orient="records")
+        raise RuntimeError(f"Duplicate fold metric rows would corrupt summaries: {rows}")
+
+    metric_candidates = [
+        "loss",
+        "threshold",
+        "auc",
+        "pr_auc",
+        "oa",
+        "kappa",
+        "precision",
+        "recall",
+        "precision_recall_gap",
+        "specificity",
+        "balanced_accuracy",
+        "mcc",
+        "brier",
+        "ece",
+        "f1",
+        "iou",
+        "tn",
+        "fp",
+        "fn",
+        "tp",
+        "auc_ci_low",
+        "auc_ci_high",
+        "pr_auc_ci_low",
+        "pr_auc_ci_high",
+        "f1_ci_low",
+        "f1_ci_high",
+        "kappa_ci_low",
+        "kappa_ci_high",
+        "precision_ci_low",
+        "precision_ci_high",
+        "recall_ci_low",
+        "recall_ci_high",
+        "validation_selection_score",
+        "best_epoch",
+        "epochs_completed",
+        "early_stopped",
+        "threshold_selected_on_validation",
+        "validation_threshold_max_score",
+        "validation_threshold_selected_score",
+        "validation_threshold_score_tolerance",
+        "validation_threshold_precision_recall_gap",
+        "validation_threshold_candidate_count",
+        "success_rate_auc",
+        "success_rate_pr_auc",
+        "training_unique_real_samples",
+        "training_supervision_instances",
+        "training_context_view_count",
+        "training_optimizer_items",
+        "training_observed_max_supervised_points_per_item",
+        "training_batch_weight_mass_coefficient_of_variation",
+        "training_batch_weight_mass_max_to_mean_ratio",
+        "training_configured_negative_to_positive_weight_ratio",
+        "training_observed_negative_to_positive_weight_ratio",
+        "ema_decay",
+        "ema_start_epoch",
+        "ema_updates",
+        "train_positive_samples",
+        "validation_positive_samples",
+        "test_positive_samples",
+    ]
+    metric_columns = [
+        column for column in metric_candidates if column in frame.columns
+    ]
+    metadata_columns = [
+        "model",
+        "model_display_name",
+        "model_family",
+        "implementation",
+        "paper_role",
+        "sampling_method",
+        "fold",
+        "test_region",
+        "validation_region",
+        "train_regions",
+    ]
+    metadata_columns = [
+        column for column in metadata_columns if column in frame.columns
+    ]
+    fold_rows = frame[metadata_columns + metric_columns].copy()
+    fold_rows.insert(0, "row_type", "fold")
+    fold_rows.insert(1, "completed_folds", 1)
+    fold_rows.insert(2, "expected_folds", 5)
+
+    summary_rows = []
+    groups = ["model", "model_display_name", "sampling_method"]
+    optional_group_columns = [
+        column
+        for column in ("model_family", "implementation", "paper_role")
+        if column in frame.columns
+    ]
+    for key, group in frame.groupby(groups, sort=False):
+        model_name, display_name, sampling_method = key
+        fold_count = int(group["test_region"].nunique())
+        base = {
+            "model": model_name,
+            "model_display_name": display_name,
+            "sampling_method": sampling_method,
+            "fold": "all",
+            "test_region": "all",
+            "validation_region": "varies",
+            "train_regions": "varies",
+        }
+        for column in optional_group_columns:
+            base[column] = group[column].iloc[0]
+        for statistic, row_type in (
+            ("mean", "five_fold_mean" if fold_count == 5 else "available_fold_mean"),
+            ("std", "five_fold_std" if fold_count == 5 else "available_fold_std"),
+        ):
+            row = {
+                "row_type": row_type,
+                "completed_folds": fold_count,
+                "expected_folds": 5,
+                **base,
+            }
+            for column in metric_columns:
+                values = pd.to_numeric(group[column], errors="coerce")
+                if statistic == "mean":
+                    row[column] = float(values.mean())
+                else:
+                    row[column] = (
+                        float(values.std(ddof=1)) if values.notna().sum() > 1 else 0.0
+                    )
+            summary_rows.append(row)
+
+    unified = pd.concat(
+        [fold_rows, pd.DataFrame(summary_rows)],
+        ignore_index=True,
+        sort=False,
+    )
+    model_order = {name: index for index, name in enumerate(MODEL_SPECS)}
+    sampling_order = {"dwss": 0, "random": 1}
+    row_order = {"fold": 0, "five_fold_mean": 1, "available_fold_mean": 1,
+                 "five_fold_std": 2, "available_fold_std": 2}
+    unified["_model_order"] = unified["model"].map(model_order).fillna(len(model_order))
+    unified["_sampling_order"] = (
+        unified["sampling_method"].map(sampling_order).fillna(len(sampling_order))
+    )
+    unified["_row_order"] = unified["row_type"].map(row_order).fillna(9)
+    unified["_fold_order"] = pd.to_numeric(unified["fold"], errors="coerce").fillna(999)
+    unified = unified.sort_values(
+        ["_sampling_order", "_model_order", "_row_order", "_fold_order"],
+        kind="stable",
+    ).drop(
+        columns=["_model_order", "_sampling_order", "_row_order", "_fold_order"]
+    )
+    unified.to_csv(
+        os.path.join(output_dir, "all_models_5fold_metrics.csv"),
+        index=False,
+    )
+
+
+def write_unified_training_history(frame, output_dir):
+    """Collect every per-model epoch/round history into one long-form CSV."""
+    history_frames = []
+    identity = [
+        "fold",
+        "test_region",
+        "validation_region",
+        "sampling_method",
+        "model",
+        "model_display_name",
+        "model_family",
+    ]
+    available_identity = [column for column in identity if column in frame.columns]
+    for _, row in frame.drop_duplicates(
+        ["fold", "test_region", "sampling_method", "model"]
+    ).iterrows():
+        model_dir = Path(
+            output_dir,
+            f"Fold_{int(row['fold'])}_TestRegion_{int(row['test_region'])}",
+            str(row["sampling_method"]).upper(),
+            f"Model_{row['model']}",
+        )
+        history_path = model_dir / "training_history.csv"
+        if not history_path.is_file():
+            continue
+        history = pd.read_csv(history_path)
+        for column in reversed(available_identity):
+            history.insert(0, column, row[column])
+        history.insert(
+            len(available_identity),
+            "round_unit",
+            (
+                "epoch"
+                if row.get("model_family") == "deep"
+                else "fit_or_cumulative_estimator_round"
+            ),
+        )
+        history.insert(
+            len(available_identity) + 1,
+            "history_file",
+            os.path.relpath(history_path, output_dir),
+        )
+        history_frames.append(history)
+    if history_frames:
+        pd.concat(history_frames, ignore_index=True, sort=False).to_csv(
+            os.path.join(output_dir, "all_models_training_history.csv"),
+            index=False,
+        )
+
+
 def write_comparison_tables(metrics, output_dir):
     if not metrics:
         return
@@ -767,6 +1350,8 @@ def write_comparison_tables(metrics, output_dir):
     detailed_path = os.path.join(output_dir, "sampling_comparison_detailed.csv")
     frame.to_csv(detailed_path, index=False)
     frame.to_csv(os.path.join(output_dir, "experiment_metrics_detailed.csv"), index=False)
+    write_unified_five_fold_table(frame, output_dir)
+    write_unified_training_history(frame, output_dir)
 
     available = [metric for metric in REQUIRED_METRICS if metric in frame.columns]
     groups = ["model", "model_display_name", "sampling_method"]
@@ -973,6 +1558,15 @@ def make_loaders(args, factor_paths, feature_transformer, split_regions, split_d
             seed=seed + index,
             region_balance=bool(args.region_balance_training and split == "train"),
             region_balance_power=args.region_balance_power,
+            augmentation_mode=args.augmentation_mode,
+            aspect_period=args.aspect_period,
+            training_context_views=(
+                args.training_context_views if split == "train" else 1
+            ),
+            max_supervised_points_per_training_tile=(
+                args.max_supervised_points_per_training_tile
+                if split == "train" else 0
+            ),
         )
     loaders["train_eval"] = make_sparse_loader(
         factor_paths,
@@ -987,6 +1581,10 @@ def make_loaders(args, factor_paths, feature_transformer, split_regions, split_d
         train=False,
         seed=seed + 101,
         region_balance=False,
+        augmentation_mode="none",
+        aspect_period=args.aspect_period,
+        training_context_views=1,
+        max_supervised_points_per_training_tile=0,
     )
     return loaders
 
@@ -1007,6 +1605,7 @@ def load_completed_fold_metrics(fold_dir, sampling_methods, model_names, test_re
                 artifact,
                 model_dir / "test_predictions.npz",
                 model_dir / "success_predictions.npz",
+                model_dir / "training_history.csv",
             )
             if not all(path.exists() for path in required):
                 return None
@@ -1110,6 +1709,10 @@ def run(args):
     args.patience = args.patience or int(params["patience"])
     args.weight_decay = args.weight_decay or float(params["weight_decay"])
     args.device_ids = parse_device_ids(args.device_ids or params["device_ids"])
+    if args.minimum_epochs > args.num_epochs:
+        raise ValueError("minimum_epochs cannot exceed num_epochs.")
+    if args.minimum_lr >= args.lr:
+        raise ValueError("minimum_lr must be smaller than the initial learning rate.")
     low_support_warning = getattr(args, "low_support_warning", None)
     if low_support_warning is None:
         low_support_warning = int(params.get("regional_low_support_warning", 30))
@@ -1148,12 +1751,20 @@ def run(args):
         raise ValueError("regional_balance_power must be in [0, 1].")
     args.region_balance_power = region_balance_power
 
-    grid = validate_aligned_rasters(args.inventory, [args.regions, *factor_paths])
-    inventory_positives, inventory_positive_counts, background_counts = collect_positive_points(
+    grid = validate_aligned_rasters(args.regions, factor_paths)
+    if not is_vector_inventory(args.inventory):
+        validate_aligned_rasters(args.regions, [args.inventory])
+    (
+        inventory_positives,
+        inventory_positive_counts,
+        background_counts,
+        inventory_audit,
+    ) = collect_positive_points(
         args.inventory,
         args.regions,
         positive_value=args.positive_value,
         chunk_size=args.raster_chunk_size,
+        return_audit=True,
     )
     region_names = load_region_names(args.region_names)
     available_regions = sorted(set(inventory_positive_counts) | set(background_counts))
@@ -1302,6 +1913,9 @@ def run(args):
     with open(os.path.join(output_dir, "macro_region_source_audit.json"), "w",
               encoding="utf-8") as handle:
         json.dump(region_provenance, handle, indent=2, ensure_ascii=False)
+    with open(os.path.join(output_dir, "landslide_inventory_audit.json"), "w",
+              encoding="utf-8") as handle:
+        json.dump(inventory_audit, handle, indent=2, ensure_ascii=False)
     write_validation_support_audit(
         os.path.join(output_dir, "regional_split_support_audit.csv"),
         region_ids,
@@ -1317,9 +1931,6 @@ def run(args):
             region_ids,
             region_names,
         )
-    if args.audit_only:
-        console(f"审计完成，结果目录：{output_dir}")
-        return
     validation_mapping_support = {
         test_region: {
             "test_positive_pixels": factor_valid_positive_counts.get(test_region, 0),
@@ -1348,6 +1959,7 @@ def run(args):
     protocol = {
         "protocol": "nested_leave_one_continuous_macro_region_out",
         "inventory": args.inventory,
+        "inventory_audit": inventory_audit,
         "macro_regions": args.regions,
         "macro_region_provenance": region_provenance,
         "macro_region_connectivity": connectivity_audit,
@@ -1404,24 +2016,56 @@ def run(args):
         "dwss_computational_policy": {
             "theta_min": args.theta_min,
             "n_strata": args.n_strata,
-            "weight_power": args.weight_power,
-            "minimum_per_stratum": args.min_per_stratum,
+            "stratum_weight_formula": "mean_zeta_k / sum_j(mean_zeta_j)",
+            "minimum_per_stratum": 0,
             "maximum_kde_prototypes": args.max_prototypes,
             "kde_chunk_size": args.kde_chunk_size,
             "candidate_multiplier": args.candidate_multiplier,
             "candidate_minimum": args.candidate_minimum,
             "candidate_maximum": args.candidate_maximum,
-            "approximation_disclosure": (
+            "training_candidate_minimum": args.training_candidate_minimum,
+            "training_candidate_maximum": args.training_candidate_maximum,
+            "adaptive_candidate_maximum": args.adaptive_candidate_maximum,
+            "adaptive_batch_size": args.adaptive_batch_size,
+            "screening_neighbors": args.screening_neighbors,
+            "strict_stratum_capacity_policy": (
+                "uniform adaptive proposals with safe KDE upper-bound pruning; "
+                "exact KDE for every screen survivor; never redistribute a "
+                "deficient stratum quota"
+            ),
+            "prototype_approximation_disclosure": (
                 "A positive prototype cap is a predeclared uniform training-only "
                 "approximation and is identical for all model comparisons."
-                if args.max_prototypes else "all inner-training positives requested"
+                if args.max_prototypes else "all inner-training positives used"
             ),
+            "background_computation_disclosure": (
+                "Natural breaks are fitted on the predeclared uniform initial "
+                "inner-training background pool. If a strict stratum quota is "
+                "short, additional background pixels are proposed uniformly; "
+                "conditional stratum means are refined from those exact-KDE "
+                "draws. This is a reproducible Monte-Carlo implementation of the "
+                "full-pixel rule, not an exhaustive KDE evaluation of every "
+                "national background pixel."
+            ),
+            "rbs_environmental_similarity": {
+                "prototype": (
+                    "joint multivariate Gaussian KDE in the complete fold-fitted "
+                    "min-max-scaled factor space"
+                ),
+                "bandwidth": "Scott",
+                "similarity": "joint density divided by its training-fitted maximum",
+                "divergence": "one minus normalized joint density",
+            },
         },
         "candidate_pool_policy": (
-            "uniform without replacement within each split, selected before "
-            "reading factor values"
+            "base pools are uniform without replacement within each split and "
+            "selected before reading factor values; DWSS may issue audited "
+            "additional uniform inner-training proposals solely to meet strict "
+            "stratum capacities"
         ),
-        "random_negative_policy": "uniform without replacement from the shared candidate pool",
+        "random_negative_policy": (
+            "uniform without replacement from the base uniform training pool"
+        ),
         "held_out_negative_policy": (
             "one fixed uniform validation/test negative set per fold, shared unchanged by "
             "DWSS and random training-sampling arms"
@@ -1442,8 +2086,27 @@ def run(args):
         "training_region_balance": {
             "enabled": args.region_balance_training,
             "scope": "inner_training_samples_only",
-            "policy": "inverse_region_class_frequency_power",
+            "policy": (
+                "class_prior_preserving_inverse_region_frequency_power"
+            ),
+            "normalization": "within_class_mean_weight_equals_one",
+            "preserves_designed_one_to_one_class_prior": True,
             "balance_power": args.region_balance_power,
+        },
+        "training_supervision_expansion": {
+            "scope": "inner_training_samples_only",
+            "method": "label_preserving_shifted_raster_context_views",
+            "context_view_count": args.training_context_views,
+            "max_supervised_points_per_optimizer_item": (
+                args.max_supervised_points_per_training_tile
+            ),
+            "unique_coordinates_and_labels_unchanged": True,
+            "positive_and_negative_views_expanded_equally": True,
+            "validation_and_test_expansion": False,
+            "optimizer_batching": (
+                "supervision_weight_mass_balanced_without_resampling"
+            ),
+            "every_optimizer_item_once_per_epoch": True,
         },
         "sampling_methods": args.sampling_methods,
         "sampling_configuration": {
@@ -1462,8 +2125,17 @@ def run(args):
         ),
         "hyperparameters_fixed_before_outer_test": {
             "num_epochs": args.num_epochs,
+            "minimum_epochs": args.minimum_epochs,
             "learning_rate": args.lr,
+            "learning_rate_scheduler": (
+                "linear_warmup_then_validation_reduce_on_plateau"
+            ),
+            "learning_rate_warmup_epochs": args.lr_warmup_epochs,
+            "learning_rate_plateau_patience": args.lr_plateau_patience,
+            "learning_rate_plateau_factor": args.lr_plateau_factor,
+            "minimum_learning_rate": args.minimum_lr,
             "patience": args.patience,
+            "selection_min_delta": args.selection_min_delta,
             "weight_decay": args.weight_decay,
             "crop_size": args.crop_size,
             "batch_size": args.batch_size,
@@ -1473,6 +2145,29 @@ def run(args):
             "classical_n_jobs": args.classical_n_jobs,
             "selection_metric": args.selection_metric,
             "threshold_metric": args.threshold_metric,
+            "threshold_selection": (
+                "exact_validation_scores_with_precision_recall_balance_tiebreak"
+            ),
+            "threshold_score_tolerance": args.threshold_score_tolerance,
+            "sparse_objective_normalization": (
+                "dataset_global_weight_mass_preserving_across_uneven_batches"
+            ),
+            "optimizer_batching": (
+                "supervision_weight_mass_balanced_without_resampling"
+            ),
+            "domain_risk_regularization": (
+                "class_conditional_V-REx_source_macro_region_risk_variance"
+            ),
+            "domain_risk_variance_weight": args.domain_risk_variance_weight,
+            "domain_risk_warmup_epochs": args.domain_risk_warmup_epochs,
+            "training_context_views": args.training_context_views,
+            "max_supervised_points_per_training_tile": (
+                args.max_supervised_points_per_training_tile
+            ),
+            "ema_decay": args.ema_decay,
+            "ema_start_epoch": args.ema_start_epoch,
+            "augmentation_mode": args.augmentation_mode,
+            "aspect_period": args.aspect_period,
             "evaluation_tta": bool(args.eval_tta),
         },
     }
@@ -1506,6 +2201,9 @@ def run(args):
         protocol_path.write_text(
             json.dumps(protocol, indent=2, ensure_ascii=False), encoding="utf-8"
         )
+    if args.audit_only:
+        console(f"审计完成，结果目录：{output_dir}")
+        return
 
     all_metrics = []
     jobs_per_fold = (
@@ -1591,6 +2289,7 @@ def run(args):
                 split_regions[split],
                 len(positive_points),
                 args.seed + fold_index * 1000 + split_index * 100,
+                split,
             )
             split_data[split] = {
                 "positive_points": positive_points,
@@ -1628,23 +2327,37 @@ def run(args):
             os.path.join(fold_dir, "frequency_ratio_mapping.csv"),
             feature_transformer,
         )
-        for split in split_data.values():
-            split["positive_normalized"] = feature_transformer.transform(split["positive_raw"])
-            split["candidate_normalized"] = feature_transformer.transform(split["candidate_raw"])
-        fold_progress.update(1)
 
         dwss = None
         fold_progress.set_postfix_str("折内 DWSS 拟合", refresh=False)
         if "dwss" in args.sampling_methods:
             dwss = FrozenDWSS.fit(
-                split_data["train"]["positive_normalized"],
-                split_data["train"]["candidate_normalized"],
+                split_data["train"]["positive_raw"],
+                split_data["train"]["candidate_raw"],
+                feature_transformer,
                 theta_min=args.theta_min,
                 n_strata=args.n_strata,
                 weight_power=args.weight_power,
                 seed=args.seed + fold_index * 10000 + 7,
                 max_prototypes=args.max_prototypes,
                 kde_chunk_size=args.kde_chunk_size,
+            )
+            augment_dwss_training_candidates(
+                args,
+                factor_paths,
+                training_regions,
+                split_data["train"],
+                dwss,
+                args.seed + fold_index * 10000 + 17,
+            )
+        fold_progress.update(1)
+
+        for split in split_data.values():
+            split["positive_normalized"] = feature_transformer.transform(
+                split["positive_raw"]
+            )
+            split["candidate_normalized"] = feature_transformer.transform(
+                split["candidate_raw"]
             )
         fold_progress.update(1)
 
@@ -1751,6 +2464,31 @@ def run(args):
                     )
                     for split in ("train", "val", "test")
                 },
+                "base_uniform_candidate_coordinates_by_split": {
+                    split: _array_sha256(
+                        split_data[split]["candidate_points"][
+                            :int(
+                                split_data[split].get(
+                                    "base_uniform_candidate_count",
+                                    len(split_data[split]["candidate_points"]),
+                                )
+                            )
+                        ],
+                        "<i8",
+                    )
+                    for split in ("train", "val", "test")
+                },
+                "dwss_adaptive_retained_training_coordinates": _array_sha256(
+                    split_data["train"]["candidate_points"][
+                        int(
+                            split_data["train"].get(
+                                "base_uniform_candidate_count",
+                                len(split_data["train"]["candidate_points"]),
+                            )
+                        ):
+                    ],
+                    "<i8",
+                ),
                 "candidate_pool_transformed_features_by_split": {
                     split: _array_sha256(
                         split_data[split]["candidate_normalized"], "<f8"
@@ -1792,7 +2530,10 @@ def run(args):
             },
             "assertions": {
                 "same_positive_coordinates": True,
-                "same_candidate_pools": True,
+                "same_inner_training_background_universe": True,
+                "random_training_pool_is_uniform": True,
+                "dwss_adaptive_proposals_are_uniform": True,
+                "adaptive_search_is_part_of_dwss_selection_rule": True,
                 "same_fold_feature_transformer": True,
                 "same_validation_negatives": True,
                 "same_test_negatives": True,
@@ -1880,6 +2621,7 @@ def run(args):
                     expected_model_artifact,
                     os.path.join(model_dir, "test_predictions.npz"),
                     os.path.join(model_dir, "success_predictions.npz"),
+                    os.path.join(model_dir, "training_history.csv"),
                 )):
                     with open(metrics_path, encoding="utf-8") as handle:
                         completed_metrics = json.load(handle)
@@ -1940,10 +2682,19 @@ def run(args):
                         for parameter in model.parameters()
                         if parameter.requires_grad
                     ))
+                    training_supervision_audit = loaders["train"].supervision_audit
+                    metadata["training_supervision_audit"] = training_supervision_audit
+                    metadata["training_region_weighting_audit"] = (
+                        loaders["train"].region_weighting_audit
+                    )
                     console(
                         f"  深度模型参数量={metadata['trainable_parameters']:,} | "
                         f"train/val/test batches={len(loaders['train'])}/"
-                        f"{len(loaders['val'])}/{len(loaders['test'])}"
+                        f"{len(loaders['val'])}/{len(loaders['test'])} | "
+                        f"unique samples="
+                        f"{training_supervision_audit['unique_real_sample_count']:,} | "
+                        f"context instances="
+                        f"{training_supervision_audit['supervision_instance_count']:,}"
                     )
                     with open(os.path.join(model_dir, "model_metadata.json"), "w",
                               encoding="utf-8") as handle:
@@ -1968,7 +2719,53 @@ def run(args):
                             test_bootstrap_confidence=bootstrap_confidence,
                             test_bootstrap_seed=model_seed + 91,
                             train_evaluation_loader=loaders["train_eval"],
+                            minimum_epochs=args.minimum_epochs,
+                            threshold_score_tolerance=args.threshold_score_tolerance,
+                            lr_warmup_epochs=args.lr_warmup_epochs,
+                            lr_plateau_patience=args.lr_plateau_patience,
+                            lr_plateau_factor=args.lr_plateau_factor,
+                            min_lr=args.minimum_lr,
+                            selection_min_delta=args.selection_min_delta,
+                            domain_risk_variance_weight=(
+                                args.domain_risk_variance_weight
+                            ),
+                            domain_risk_warmup_epochs=(
+                                args.domain_risk_warmup_epochs
+                            ),
+                            ema_decay=args.ema_decay,
+                            ema_start_epoch=args.ema_start_epoch,
                         )
+                        metrics.update({
+                            "training_unique_real_samples": int(
+                                training_supervision_audit["unique_real_sample_count"]
+                            ),
+                            "training_supervision_instances": int(
+                                training_supervision_audit["supervision_instance_count"]
+                            ),
+                            "training_context_view_count": int(
+                                training_supervision_audit["context_view_count"]
+                            ),
+                            "training_optimizer_items": int(
+                                training_supervision_audit[
+                                    "optimizer_item_count_after_supervision_chunking"
+                                ]
+                            ),
+                            "training_observed_max_supervised_points_per_item": int(
+                                training_supervision_audit[
+                                    "observed_max_supervised_points_per_optimizer_item"
+                                ]
+                            ),
+                            "training_batch_weight_mass_coefficient_of_variation": float(
+                                loaders["train"].batch_mass_audit[
+                                    "batch_weight_mass_coefficient_of_variation"
+                                ]
+                            ),
+                            "training_batch_weight_mass_max_to_mean_ratio": float(
+                                loaders["train"].batch_mass_audit[
+                                    "batch_weight_mass_max_to_mean_ratio"
+                                ]
+                            ),
+                        })
                     finally:
                         for loader in loaders.values():
                             close = getattr(loader.dataset, "close", None)
@@ -1997,6 +2794,8 @@ def run(args):
                         bootstrap_seed=model_seed + 91,
                         n_jobs=args.classical_n_jobs,
                         iterations=args.classical_iterations,
+                        selection_metric=args.selection_metric,
+                        threshold_score_tolerance=args.threshold_score_tolerance,
                     )
 
                 metrics.update({
@@ -2078,8 +2877,9 @@ def parse_args(argv=None):
         "--inventory",
         default=None,
         help=(
-            "Aligned inventory raster. Only --positive-value is treated as "
-            "landslide; old negative labels are ignored. Defaults to XML landslide_inventory."
+            "Landslide point Shapefile/GeoPackage or aligned inventory raster. "
+            "Point geometries are mapped to unique cells of the frozen regional grid. "
+            "For rasters only --positive-value is treated as landslide."
         ),
     )
     parser.add_argument(
@@ -2146,13 +2946,21 @@ def parse_args(argv=None):
         "--region-balance-training",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Temper dominant training region x class groups; strength is set by balance power.",
+        help=(
+            "Temper dominant inner-training region x class groups while preserving "
+            "the configured positive/negative class prior; strength is set by balance power."
+        ),
     )
     parser.add_argument("--region-balance-power", type=float, default=None)
     parser.add_argument("--negative-ratio", type=float, default=None)
     parser.add_argument("--candidate-multiplier", type=float, default=None)
     parser.add_argument("--candidate-minimum", type=int, default=None)
     parser.add_argument("--candidate-maximum", type=int, default=None)
+    parser.add_argument("--training-candidate-minimum", type=int, default=None)
+    parser.add_argument("--training-candidate-maximum", type=int, default=None)
+    parser.add_argument("--adaptive-candidate-maximum", type=int, default=None)
+    parser.add_argument("--adaptive-batch-size", type=int, default=None)
+    parser.add_argument("--screening-neighbors", type=int, default=None)
     parser.add_argument("--theta-min", type=float, default=None)
     parser.add_argument("--n-strata", type=int, default=None)
     parser.add_argument("--weight-power", type=float, default=None)
@@ -2162,8 +2970,8 @@ def parse_args(argv=None):
         type=int,
         default=None,
         help=(
-            "Maximum training-positive KDE prototypes (default 2000 for bounded "
-            "runtime); 0 requests every inner-training positive. The value is audited."
+            "Maximum joint-KDE prototypes; the manuscript-strict default 0 "
+            "uses every inner-training positive. Any positive cap is audited."
         ),
     )
     parser.add_argument("--kde-chunk-size", type=int, default=None)
@@ -2172,15 +2980,59 @@ def parse_args(argv=None):
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--selection-metric", choices=("auc", "f1", "kappa", "iou"), default=None)
     parser.add_argument("--threshold-metric", choices=("f1", "kappa", "iou"), default=None)
+    parser.add_argument(
+        "--threshold-score-tolerance",
+        type=float,
+        default=None,
+        help=(
+            "Maximum validation metric sacrificed when choosing the threshold "
+            "with the smallest precision-recall gap."
+        ),
+    )
+    parser.add_argument("--selection-min-delta", type=float, default=None)
     parser.add_argument("--eval-tta", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument(
+        "--augmentation-mode",
+        choices=("none", "aspect_safe_d4"),
+        default=None,
+    )
+    parser.add_argument("--aspect-period", type=float, default=None)
     parser.add_argument("--crop-size", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--num-workers", type=int, default=None)
     parser.add_argument("--num-bands", type=int, default=None)
     parser.add_argument("--num-epochs", type=int, default=None)
+    parser.add_argument("--minimum-epochs", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--lr-warmup-epochs", type=int, default=None)
+    parser.add_argument("--lr-plateau-patience", type=int, default=None)
+    parser.add_argument("--lr-plateau-factor", type=float, default=None)
+    parser.add_argument("--minimum-lr", type=float, default=None)
     parser.add_argument("--patience", type=int, default=None)
     parser.add_argument("--weight-decay", type=float, default=None)
+    parser.add_argument("--domain-risk-variance-weight", type=float, default=None)
+    parser.add_argument("--domain-risk-warmup-epochs", type=int, default=None)
+    parser.add_argument(
+        "--training-context-views",
+        type=int,
+        choices=(1, 2, 4),
+        default=None,
+        help=(
+            "Training-only shifted crop-grid views per real sample; no coordinates "
+            "or labels are synthesized."
+        ),
+    )
+    parser.add_argument(
+        "--max-supervised-points-per-training-tile",
+        type=int,
+        default=None,
+        help=(
+            "Split exceptionally dense training contexts into bounded supervision "
+            "items; 0 disables the bound."
+        ),
+    )
+    parser.add_argument("--ema-decay", type=float, default=None)
+    parser.add_argument("--ema-start-epoch", type=int, default=None)
     parser.add_argument("--device-ids", default=None)
     parser.add_argument("--classical-iterations", type=int, default=None)
     parser.add_argument("--classical-n-jobs", type=int, default=None)

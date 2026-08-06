@@ -1,9 +1,7 @@
-"""Validation and full-domain susceptibility mapping.
+"""Full-domain susceptibility mapping.
 
-OOF maps predict each macro-region only with the fold that held that complete
-region out, so they remain validation products. Full maps are explicitly
-separate deployment-oriented cross-fold ensembles: dense deep models use MSMF,
-whereas classical models use direct per-pixel inference without MSMF.
+Dense deep models use MSMF for deployment maps, whereas classical models use
+direct per-pixel inference without MSMF.
 
 The command-line entry point accepts either:
 
@@ -28,17 +26,15 @@ import joblib
 import numpy as np
 import rasterio
 import torch
-import torch.nn.functional as F
 from rasterio.windows import Window
 
-from .data import FrozenFoldFeatureTransformer, validate_aligned_rasters
+from .data import FrozenFoldFeatureTransformer, iter_windows
 from .model_registry import (
     MODEL_SPECS,
     build_deep_model,
     expand_model_selection,
 )
 from .progress import configure_progress, console, track, window_count
-from .training import predict_probabilities, resolve_device
 
 
 FOLD_PATTERN = re.compile(r"Fold_(\d+)_TestRegion_(\d+)$")
@@ -115,32 +111,6 @@ def _valid(data, nodata):
     if nodata is not None and np.isfinite(nodata):
         mask &= ~np.isclose(data, nodata)
     return mask
-
-
-def _windows(height, width, size):
-    for row in range(0, height, size):
-        for col in range(0, width, size):
-            yield Window(col, row, min(size, width - col), min(size, height - row))
-
-
-def _initialize(destination, value, tile_size, description="初始化输出栅格"):
-    windows = _windows(destination.height, destination.width, tile_size)
-    for window in track(
-        windows,
-        total=window_count(destination.height, destination.width, tile_size),
-        desc=description,
-        unit="tile",
-    ):
-        destination.write(
-            np.full(
-                (int(window.height), int(window.width)),
-                value,
-                dtype=destination.dtypes[0],
-            ),
-            1,
-            window=window,
-        )
-
 
 def discover_folds(experiment_dir: Path) -> dict[int, Path]:
     if not experiment_dir.is_dir():
@@ -292,7 +262,6 @@ def resolve_experiment_dir(
     source: str | Path,
     *,
     explicit_experiment_dir: str | Path | None = None,
-    allow_partial: bool = False,
 ) -> tuple[Path, dict[str, str]]:
     """Resolve a completed experiment from a directory or project XML."""
     source_path = Path(_normalize_path(source)).expanduser().resolve()
@@ -325,19 +294,11 @@ def resolve_experiment_dir(
             complete = [audit for audit in audits if audit["complete"]]
             if complete:
                 selected = max(complete, key=lambda row: row["mtime"])
-            elif allow_partial:
-                structurally_valid = [audit for audit in audits if audit["structure_valid"]]
-                if not structurally_valid:
-                    raise RuntimeError(
-                        "No structurally valid experiment was found. Candidates:\n"
-                        + _format_candidate_audits(audits)
-                    )
-                selected = max(structurally_valid, key=lambda row: row["mtime"])
             else:
                 raise RuntimeError(
                     "Experiments were found below train_output, but none is complete enough "
-                    "for prediction. Resume/finish training, pass --allow-partial for a "
-                    "diagnostic map, or provide --experiment-dir explicitly.\n"
+                    "for prediction. Resume/finish training or provide "
+                    "--experiment-dir explicitly.\n"
                     + _format_candidate_audits(audits)
                 )
             experiment_dir = Path(selected["path"])
@@ -404,95 +365,6 @@ def _read_tile(sources, window, transformer):
     raw = np.stack(arrays, axis=0)
     transformed = transformer.transform(raw.reshape(len(arrays), -1).T).T.reshape(raw.shape)
     return transformed.astype(np.float32, copy=False), valid
-
-
-def _predict_fold(
-    model_name,
-    model_dir,
-    test_region,
-    region_source,
-    factor_sources,
-    transformer,
-    destination,
-    crop_size,
-    device,
-    use_tta,
-    binary_destination=None,
-    threshold=None,
-):
-    spec = MODEL_SPECS[model_name]
-    if spec.family == "deep":
-        predictor = _load_deep_model(
-            model_name,
-            len(factor_sources),
-            model_dir / "best_model_weight.pth",
-            device,
-        )
-    else:
-        model_path = model_dir / "best_model.joblib"
-        if not model_path.is_file():
-            raise FileNotFoundError(f"Missing classical model: {model_path}")
-        predictor = joblib.load(model_path)
-
-    predicted_cells = 0
-    with torch.inference_mode():
-        windows = _windows(region_source.height, region_source.width, crop_size)
-        tile_progress = track(
-            windows,
-            total=window_count(region_source.height, region_source.width, crop_size),
-            desc=f"区域 {test_region} OOF 推理",
-            unit="tile",
-        )
-        for window in tile_progress:
-            region = region_source.read(1, window=window)
-            region_mask = _valid(region, region_source.nodata) & np.isclose(
-                region, test_region
-            )
-            if not np.any(region_mask):
-                continue
-            factors, factor_valid = _read_tile(factor_sources, window, transformer)
-            usable = region_mask & factor_valid
-            if not np.any(usable):
-                continue
-
-            if spec.family == "deep":
-                factors[:, ~usable] = 0.0
-                tensor = torch.from_numpy(factors[None]).to(device)
-                original_height, original_width = tensor.shape[-2:]
-                pad_height = (16 - original_height % 16) % 16
-                pad_width = (16 - original_width % 16) % 16
-                if pad_height or pad_width:
-                    tensor = F.pad(tensor, (0, pad_width, 0, pad_height))
-                probability, _logits = predict_probabilities(
-                    predictor, tensor, use_tta=use_tta
-                )
-                probability = (
-                    probability[0, :original_height, :original_width]
-                    .float()
-                    .cpu()
-                    .numpy()
-                )
-            else:
-                probability = np.full(region.shape, NODATA, dtype=np.float32)
-                features = factors[:, usable].T
-                probability[usable] = predictor.predict_proba(features)[:, 1]
-
-            current = destination.read(1, window=window)
-            current[usable] = probability[usable]
-            destination.write(current.astype(np.float32), 1, window=window)
-            if binary_destination is not None:
-                if threshold is None:
-                    raise ValueError("A threshold is required when writing binary maps.")
-                binary = binary_destination.read(1, window=window)
-                binary[usable] = (probability[usable] >= threshold).astype(np.uint8)
-                binary_destination.write(binary, 1, window=window)
-            predicted_cells += int(np.count_nonzero(usable))
-            tile_progress.set_postfix(predicted=f"{predicted_cells:,}", refresh=False)
-
-    del predictor
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    return predicted_cells
 
 
 def _resolve_models(args, registry):
@@ -599,7 +471,11 @@ def _write_classical_fold_map(
                     **_full_map_profile(region_source),
                 )
             )
-            windows = _windows(region_source.height, region_source.width, tile_size)
+            windows = iter_windows(
+                region_source.height,
+                region_source.width,
+                tile_size,
+            )
             for window in track(
                 windows,
                 total=window_count(
@@ -687,7 +563,7 @@ def _fuse_classical_fold_maps(
                 raise ValueError("A threshold is required for a binary map.")
 
             valid_cells = 0
-            windows = _windows(reference.height, reference.width, tile_size)
+            windows = iter_windows(reference.height, reference.width, tile_size)
             for window in track(
                 windows,
                 total=window_count(reference.height, reference.width, tile_size),
@@ -873,8 +749,8 @@ def generate_classical_full_map(
             "msmf_used": False,
             "fold_fusion": "pixelwise_median",
             "scientific_interpretation": (
-                "Deployment-oriented cross-fold ensemble map; it is not an OOF "
-                "validation product and must not be used for held-out accuracy."
+                "Deployment-oriented cross-fold ensemble map; it must not be used "
+                "for held-out accuracy."
             ),
         },
     )
@@ -884,212 +760,6 @@ def generate_classical_full_map(
     return str(probability_path)
 
 
-def run_oof(args):
-    if hasattr(args, "progress"):
-        configure_progress(bool(args.progress))
-
-    source = getattr(args, "source", None) or getattr(
-        args, "experiment_dir", None
-    )
-    experiment_dir, xml_params = resolve_experiment_dir(
-        source,
-        explicit_experiment_dir=args.experiment_dir,
-        allow_partial=bool(args.allow_partial),
-    )
-    protocol = _load_json(experiment_dir / "validation_protocol.json")
-    registry = _load_json(experiment_dir / "model_registry.json")
-
-    if args.device_ids is None:
-        args.device_ids = _parse_int_tokens(xml_params.get("device_ids"), default=(0,))
-    if args.output_dir is None and xml_params.get("prediction_output"):
-        args.output_dir = xml_params["prediction_output"]
-    if args.write_binary is None:
-        args.write_binary = _parse_bool(xml_params.get("prediction_write_binary"), False)
-
-    models = _resolve_models(args, registry)
-    sampling_methods = args.sampling_methods or protocol["sampling_methods"]
-    unknown_methods = sorted(set(sampling_methods) - set(protocol["sampling_methods"]))
-    if unknown_methods:
-        raise ValueError(f"Sampling arms were not trained: {unknown_methods}")
-
-    folds = discover_folds(experiment_dir)
-    if not folds:
-        raise FileNotFoundError(
-            f"No Fold_*_TestRegion_* directories were found in {experiment_dir}."
-        )
-    expected_regions = set(map(int, protocol["region_ids"]))
-    found_regions = set(folds)
-    if not args.allow_partial and found_regions != expected_regions:
-        raise RuntimeError(
-            f"A complete OOF map needs test folds {sorted(expected_regions)}, but found "
-            f"{sorted(found_regions)}. Use --allow-partial only for a clearly labelled "
-            "diagnostic map."
-        )
-    _validate_selected_artifacts(experiment_dir, folds, models, sampling_methods)
-
-    factors = [str(Path(path).expanduser()) for path in protocol["factor_paths"]]
-    regions_path = str(Path(protocol["macro_regions"]).expanduser())
-    validate_aligned_rasters(regions_path, factors)
-    crop_size = int(protocol["hyperparameters_fixed_before_outer_test"]["crop_size"])
-    output_dir = Path(args.output_dir or experiment_dir / "oof_maps").expanduser().resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    device, resolved_device_ids = resolve_device(args.device_ids)
-    console(
-        "步骤 3/3：生成区域外留 OOF 图 | "
-        f"experiment={experiment_dir} | models={len(models)} | "
-        f"sampling={sampling_methods} | folds={len(folds)} | "
-        f"device={device} | GPU IDs={resolved_device_ids or 'none'} | output={output_dir}"
-    )
-
-    outputs = []
-    overall_progress = track(
-        total=len(sampling_methods) * len(models),
-        desc="OOF 制图总进度",
-        unit="map",
-        leave=True,
-    )
-    with ExitStack() as stack:
-        region_source = stack.enter_context(rasterio.open(regions_path))
-        factor_sources = [stack.enter_context(rasterio.open(path)) for path in factors]
-        profile = region_source.profile.copy()
-        profile.update(
-            driver="GTiff",
-            dtype="float32",
-            count=1,
-            nodata=NODATA,
-            compress="deflate",
-            predictor=3,
-            BIGTIFF="IF_SAFER",
-        )
-        binary_profile = profile.copy()
-        binary_profile.update(dtype="uint8", nodata=255, predictor=2)
-
-        for method in sampling_methods:
-            for model_name in models:
-                console(
-                    f"开始制图：{MODEL_SPECS[model_name].display_name} | "
-                    f"sampling={method.upper()}"
-                )
-                map_path = output_dir / f"oof_{model_name}_{method}_probability.tif"
-                class_path = output_dir / f"oof_{model_name}_{method}_class.tif"
-                metadata_path = map_path.with_suffix(".json")
-                _prepare_output_path(map_path, args.overwrite)
-                _prepare_output_path(metadata_path, args.overwrite)
-                if args.write_binary:
-                    _prepare_output_path(class_path, args.overwrite)
-
-                temporary_map = map_path.with_name(f".{map_path.name}.partial")
-                temporary_class = class_path.with_name(f".{class_path.name}.partial")
-                temporary_map.unlink(missing_ok=True)
-                temporary_class.unlink(missing_ok=True)
-
-                try:
-                    with rasterio.open(temporary_map, "w+", **profile) as destination:
-                        _initialize(destination, NODATA, crop_size, "初始化概率图")
-                        if args.write_binary:
-                            binary_context = rasterio.open(
-                                temporary_class, "w+", **binary_profile
-                            )
-                            _initialize(binary_context, 255, crop_size, "初始化分类图")
-                        else:
-                            binary_context = None
-                        try:
-                            region_counts = {}
-                            thresholds = {}
-                            for test_region, fold_dir in sorted(folds.items()):
-                                model_dir = (
-                                    fold_dir / method.upper() / f"Model_{model_name}"
-                                )
-                                fold_audit = _load_json(
-                                    fold_dir / "fold_leakage_audit.json"
-                                )
-                                transformer = FrozenFoldFeatureTransformer.from_dict(
-                                    fold_audit["feature_transformer"]
-                                )
-                                expected_factor_names = [
-                                    Path(path).stem for path in factors
-                                ]
-                                if list(transformer.factor_names) != expected_factor_names:
-                                    raise RuntimeError(
-                                        f"Fold {test_region} transformer factor order differs "
-                                        "from validation_protocol.json."
-                                    )
-                                metrics = _load_json(model_dir / "test_metrics.json")
-                                threshold = float(
-                                    metrics["threshold_selected_on_validation"]
-                                )
-                                thresholds[test_region] = threshold
-                                region_counts[test_region] = _predict_fold(
-                                    model_name,
-                                    model_dir,
-                                    test_region,
-                                    region_source,
-                                    factor_sources,
-                                    transformer,
-                                    destination,
-                                    crop_size,
-                                    device,
-                                    bool(protocol.get("evaluation_tta", False)),
-                                    binary_destination=binary_context,
-                                    threshold=threshold,
-                                )
-                                console(
-                                    f"区域 {test_region} 完成 | "
-                                    f"threshold={threshold:.3f} | "
-                                    f"predicted={region_counts[test_region]:,} cells"
-                                )
-                        finally:
-                            if binary_context is not None:
-                                binary_context.close()
-
-                    os.replace(temporary_map, map_path)
-                    if args.write_binary:
-                        os.replace(temporary_class, class_path)
-                except Exception:
-                    temporary_map.unlink(missing_ok=True)
-                    temporary_class.unlink(missing_ok=True)
-                    raise
-
-                metadata_path.write_text(
-                    json.dumps(
-                        {
-                            "map_type": (
-                                "cross_fitted_leave_one_macro_region_out_probability"
-                            ),
-                            "model": MODEL_SPECS[model_name].to_dict(),
-                            "sampling_method": method,
-                            "source_experiment": str(experiment_dir),
-                            "test_regions_included": sorted(folds),
-                            "complete_region_universe": sorted(expected_regions),
-                            "complete_oof_coverage_requested": not args.allow_partial,
-                            "predicted_factor_valid_cells_by_region": region_counts,
-                            "validation_selected_thresholds_by_region": thresholds,
-                            "outside_test_region_context_policy": (
-                                "masked_to_zero_per_fold"
-                            ),
-                            "probability_raster": str(map_path),
-                            "binary_raster": (
-                                str(class_path) if args.write_binary else None
-                            ),
-                            "note": (
-                                "This is an out-of-region validation map. It must not "
-                                "be described as a model trained on all available labels."
-                            ),
-                        },
-                        indent=2,
-                        ensure_ascii=False,
-                    ),
-                    encoding="utf-8",
-                )
-                outputs.append(str(map_path))
-                overall_progress.update(1)
-                overall_progress.set_postfix_str(
-                    f"{model_name}/{method}", refresh=False
-                )
-                console(f"已写出：{map_path}")
-    overall_progress.close()
-    console(f"步骤 3/3 完成，共生成 {len(outputs)} 幅概率图。")
-    return outputs
 
 
 def _configured_model_tokens(value) -> list[str] | None:
@@ -1109,7 +779,6 @@ def run_full(args):
     experiment_dir, xml_params = resolve_experiment_dir(
         args.source,
         explicit_experiment_dir=getattr(args, "experiment_dir", None),
-        allow_partial=False,
     )
     protocol = _load_json(experiment_dir / "validation_protocol.json")
     registry = _load_json(experiment_dir / "model_registry.json")
@@ -1129,9 +798,6 @@ def run_full(args):
     )
     if unknown_methods:
         raise ValueError(f"Sampling arms were not trained: {unknown_methods}")
-    if getattr(args, "allow_partial", False):
-        raise ValueError("--allow-partial is valid only with --map-type oof.")
-
     folds = discover_folds(experiment_dir)
     expected_regions = set(map(int, protocol["region_ids"]))
     if set(folds) != expected_regions:
@@ -1296,31 +962,14 @@ def run_full(args):
 
 
 def run(args):
-    map_type = getattr(args, "map_type", None)
-    if map_type is None:
-        source = getattr(args, "source", None) or getattr(
-            args, "experiment_dir", None
-        )
-        source_path = Path(_normalize_path(source)).expanduser()
-        if source_path.suffix.lower() == ".xml" and source_path.is_file():
-            map_type = _read_xml_params(source_path).get(
-                "prediction_map_type", "full"
-            )
-        else:
-            map_type = "full"
-    map_type = str(map_type).strip().lower()
-    if map_type == "oof":
-        return run_oof(args)
-    if map_type == "full":
-        return run_full(args)
-    raise ValueError("prediction map type must be 'full' or 'oof'.")
+    return run_full(args)
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description=(
-            "Generate full-domain deployment maps or cross-fitted OOF validation maps. "
-            "Deep full maps always use MSMF; classical full maps never use MSMF."
+            "Generate full-domain deployment maps. Deep models use MSMF; "
+            "classical models use direct per-pixel inference."
         )
     )
     parser.add_argument(
@@ -1343,15 +992,6 @@ def parse_args(argv=None):
         "--models", nargs="+", default=None, help="Default: all trained models."
     )
     parser.add_argument(
-        "--map-type",
-        choices=("full", "oof"),
-        default=None,
-        help=(
-            "full (default, or XML prediction_map_type) builds deployment maps; "
-            "oof builds held-out regional validation maps."
-        ),
-    )
-    parser.add_argument(
         "--sampling-methods", nargs="+", choices=("dwss", "random")
     )
     parser.add_argument("--output-dir", default=None)
@@ -1367,11 +1007,6 @@ def parse_args(argv=None):
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Also write thresholded class rasters.",
-    )
-    parser.add_argument(
-        "--allow-partial",
-        action="store_true",
-        help="OOF only: allow a diagnostic map from incomplete outer folds.",
     )
     parser.add_argument(
         "--crop-size",

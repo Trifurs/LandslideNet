@@ -18,7 +18,6 @@ import csv
 import hashlib
 import json
 import os
-import re
 import warnings
 import xml.etree.ElementTree as ET
 from contextlib import ExitStack
@@ -93,21 +92,6 @@ def parse_name_list(value) -> tuple[str, ...]:
     return tuple(names)
 
 
-def parse_int_list(value) -> tuple[int, ...]:
-    if value is None or str(value).strip() in {"", "[]"}:
-        return ()
-    if isinstance(value, (list, tuple)):
-        items = value
-    else:
-        items = str(value).strip("[]").split(",")
-    result = []
-    for item in items:
-        text = str(item).strip()
-        if text:
-            result.append(int(text))
-    return tuple(result)
-
-
 def resolve_output_template(template: str, region_count: int) -> str:
     return normalize_path(template).replace(
         "{macro_region_count}", str(region_count)
@@ -122,7 +106,6 @@ class TerrainRegionConfig:
     factor_names: tuple[str, ...] = DEFAULT_TERRAIN_FACTORS
     downsample: int = 64
     spatial_weight: float = 1.5
-    sensitivity_counts: tuple[int, ...] = ()
     minimum_region_fraction: float = 0.03
     maximum_excluded_coarse_fraction: float = 0.01
     maximum_removed_full_fraction: float = 0.005
@@ -143,7 +126,6 @@ class TerrainRegionConfig:
             factor_names=parse_name_list(params.get("macro_region_factors")),
             downsample=int(params.get("macro_region_downsample", 64)),
             spatial_weight=float(params.get("macro_region_spatial_weight", 1.5)),
-            sensitivity_counts=parse_int_list(params.get("macro_region_sensitivity_counts")),
             minimum_region_fraction=float(params.get("macro_region_minimum_fraction", 0.03)),
             maximum_excluded_coarse_fraction=float(
                 params.get("macro_region_maximum_excluded_fraction", 0.01)
@@ -155,8 +137,8 @@ class TerrainRegionConfig:
         )
 
     def validate(self) -> None:
-        if self.region_count < 3:
-            raise ValueError("At least three regions are required for nested regional hold-out.")
+        if self.region_count != 5:
+            raise ValueError("The manuscript protocol uses only K=5 macro-regions.")
         if self.downsample < 1:
             raise ValueError("macro_region_downsample must be at least 1.")
         if self.spatial_weight < 0:
@@ -171,9 +153,6 @@ class TerrainRegionConfig:
         ):
             if not 0 <= value < 1:
                 raise ValueError(f"{name} must be in [0, 1).")
-        counts = {self.region_count, *self.sensitivity_counts}
-        if any(count < 3 for count in counts):
-            raise ValueError("Every requested sensitivity count must be at least three.")
 
 
 def config_from_xml(xml_path: str) -> TerrainRegionConfig:
@@ -413,23 +392,8 @@ def cluster_continuous_regions(matrix: np.ndarray, connectivity: sparse.csr_matr
     }
 
 
-def _sensitivity_path(primary_path: str, primary_count: int, count: int) -> str:
-    path = Path(primary_path)
-    stem = path.stem
-    pattern = re.compile(rf"_k{primary_count}$", flags=re.IGNORECASE)
-    if pattern.search(stem):
-        stem = pattern.sub(f"_k{count}", stem)
-    else:
-        stem = f"{stem}_k{count}"
-    return str(path.with_name(stem + path.suffix))
-
-
 def requested_outputs(config: TerrainRegionConfig) -> dict[int, str]:
-    outputs = {config.region_count: config.output_path}
-    for count in config.sensitivity_counts:
-        if count not in outputs:
-            outputs[count] = _sensitivity_path(config.output_path, config.region_count, count)
-    return outputs
+    return {5: config.output_path}
 
 
 def diagnostic_path(raster_path: str) -> str:
@@ -698,11 +662,11 @@ def _write_layout_plot(path: str, labels: np.ndarray, region_count: int) -> None
 
 
 def build_terrain_macro_regions(config: TerrainRegionConfig, overwrite: bool = False) -> dict:
-    """Build the primary and optional K-sensitivity regionalizations."""
+    """Build the single K=5 terrain-derived regionalization."""
     config.validate()
     console(
         "区域构建配置："
-        f"K={config.region_count}，敏感性={list(config.sensitivity_counts)}，"
+        f"K={config.region_count}，"
         f"因子={len(config.factor_names)}，降采样={config.downsample}"
     )
     factor_paths = resolve_factor_paths(config.factors_dir, config.factor_names)

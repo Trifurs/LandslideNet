@@ -12,7 +12,7 @@ and susceptibility-map generation.
 - Train LandslideNet, classical machine-learning models, and controlled deep
   learning variants.
 - Compare DWSS and random negative-sampling strategies.
-- Produce full-domain ensemble maps or out-of-fold regional maps.
+- Produce full-domain ensemble susceptibility maps.
 - Save fold metrics, predictions, training histories, and experiment metadata.
 
 ## Repository structure
@@ -23,8 +23,7 @@ and susceptibility-map generation.
 ├── 2_model_train.py                  # Train regional experiments
 ├── 3_model_predict.py                # Generate susceptibility maps
 ├── Landslide_susceptibility_mapping.xml  # Main project configuration
-├── landslidenet/
-│   └── model.py                      # LandslideNet architecture
+├── models/                           # LandslideNet and all comparison models
 ├── utils/                            # Data, training, prediction, and reporting code
 ├── environment.yml                   # Conda environment
 ├── pyproject.toml                    # Python package metadata
@@ -56,15 +55,38 @@ Edit `Landslide_susceptibility_mapping.xml` before running the pipeline. The
 configuration specifies:
 
 - the directory containing aligned factor rasters;
-- the landslide inventory raster;
+- the point-vector landslide inventory (or a legacy aligned raster);
 - the number and output path of macro-regions;
 - regional split and sampling parameters;
 - model selection and training hyperparameters;
 - training and prediction output directories.
 
 Factor rasters must share the same grid, extent, resolution, and coordinate
-reference system. Paths in the XML may be absolute or changed to match a local
-data layout.
+reference system. Point inventories are reprojected to this grid and duplicate
+points in the same cell are removed. Paths in the XML may be absolute or
+changed to match a local data layout.
+
+DWSS is fitted independently inside every outer fold from inner-training
+regions only. It uses the joint multivariate Gaussian KDE, `theta_min = 0.55`,
+three Jenks natural-break strata, a 1:1 class ratio, and the manuscript
+allocation based on each stratum's mean divergence. If an initial uniform
+candidate pool cannot meet a stratum quota, the trainer draws additional
+uniform background proposals and safely prunes impossible candidates with a
+Gaussian-kernel upper bound before exact KDE evaluation. Quotas are never
+silently moved between strata; all capacities and selected counts are recorded
+in `fold_leakage_audit.json` and `sampling_diagnostics.json`.
+
+The default training controls are designed for the strongly unequal support of
+the frozen continuous regions without reading the outer test block. Regional
+sample weights are normalized separately inside each class, so the required
+1:1 positive/negative loss prior is preserved. Deep models use the same
+source-region V-REx penalty, Aspect-aware flip/rotation augmentation, five-epoch
+learning-rate warm-up, validation-AUC checkpoint selection, plateau-based
+learning-rate reduction, and a 60-epoch minimum before early stopping. The
+classification threshold is selected only on the validation region. It is
+searched at the exact validation scores and, within the configured F1
+tolerance, favors the smallest precision-recall gap. These controls are shared
+by both DWSS/random arms and by every applicable comparison model.
 
 ## Quick start
 
@@ -87,12 +109,14 @@ conda run -n landslidenet python 2_model_train.py \
 conda run -n landslidenet python 3_model_predict.py \
   /home/whu/桌面/myResult/LandslideNet/02_experiment \
   --models landslidenet \
-  --sampling-methods dwss random \
-  --map-type full
+  --sampling-methods dwss random
 ```
 
 To continue an interrupted training run, repeat the training command with
 `--resume`. Use `--overwrite` only when existing outputs should be replaced.
+Because the resolved training protocol is part of the resume contract, results
+created with an older XML snapshot cannot be resumed with the revised controls;
+start a new output directory instead.
 
 ## Model selection
 
@@ -122,13 +146,9 @@ conda run -n landslidenet python 2_model_train.py \
 
 ## Prediction modes
 
-`3_model_predict.py` supports two map types:
-
-- `full`: combines the trained fold models into a full-domain susceptibility
-  map. Deep models use multi-stride median fusion; classical models use direct
-  per-pixel inference.
-- `oof`: creates an out-of-fold map in which each region is predicted by the
-  fold that held that region out.
+`3_model_predict.py` combines the trained fold models into a full-domain
+susceptibility map. Deep models use multi-stride median fusion; classical
+models use direct per-pixel inference.
 
 Use `--sampling-methods dwss random` to generate maps for both sampling
 strategies, or specify only one method.
@@ -140,6 +160,10 @@ directory. Typical files include:
 
 - fold-specific model checkpoints and configuration snapshots;
 - training history and evaluation metric tables;
+- `all_models_5fold_metrics.csv`, containing fold rows plus five-fold
+  mean/standard-deviation rows for every model and sampling arm;
+- `all_models_training_history.csv`, containing every available training or
+  boosting round across folds, models, and sampling arms;
 - raster susceptibility maps and optional binary maps;
 - sample manifests and regional split information;
 - JSON metadata describing the completed experiment.

@@ -6,8 +6,8 @@ from dataclasses import asdict, dataclass
 
 import torch.nn as nn
 
-from Tools.model_comparisons.deep_models import build_comparison_deep_model
-from landslidenet.model import build_landslidenet_variant
+from models.comparisons import build_comparison_deep_model
+from models.landslidenet import build_landslidenet_variant
 
 
 @dataclass(frozen=True)
@@ -68,7 +68,7 @@ MODEL_SPECS = {
     ),
     "baseline": ModelSpec(
         "baseline",
-        "Baseline (UNet-like)",
+        "Baseline",
         "deep",
         "controlled_ablation",
         "ablation",

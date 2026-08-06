@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Step 3: generate validation or full-domain susceptibility maps."""
+"""Step 3: generate full-domain susceptibility maps."""
 
 from utils.prediction import parse_args, run
 
