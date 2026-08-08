@@ -46,7 +46,7 @@ def write_rate_curve_reports(metrics, output_dir):
     for row in track(
         metrics,
         total=len(metrics),
-        desc="生成 SRC/PRC 数据",
+        desc="Generating SRC/PRC data",
         unit="result",
     ):
         test_path = output_dir / row["prediction_file"]
@@ -121,7 +121,7 @@ def write_rate_curve_reports(metrics, output_dir):
     for method, curve_type, title in track(
         plot_jobs,
         total=len(plot_jobs),
-        desc="绘制 SRC/PRC 曲线",
+        desc="Plotting SRC/PRC curves",
         unit="figure",
     ):
         selected = mean_curves[

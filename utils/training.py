@@ -504,7 +504,7 @@ def evaluate_model(model, data_loader, device, phase='Validation', threshold=0.5
         batches = track(
             data_loader,
             total=len(data_loader),
-            desc=f"{phase} 推理",
+            desc=f"{phase} inference",
             unit="batch",
             disable=not show_progress,
         )
@@ -579,7 +579,7 @@ def evaluate_model(model, data_loader, device, phase='Validation', threshold=0.5
         confidence=float(bootstrap_confidence),
         seed=int(bootstrap_seed),
         block_ids=all_blocks,
-        progress_desc=(f"{phase} 空间块 Bootstrap" if show_progress else None),
+        progress_desc=(f"{phase} spatial-block bootstrap" if show_progress else None),
     )
     metrics.update(intervals)
     if return_predictions:
@@ -770,7 +770,7 @@ def train_model(model, train_loader, val_loader, test_loader, num_epochs=10, lr=
         if device.type == "cuda" else "CPU"
     )
     logger.info(
-        f"训练启动 | device={device} ({device_name}) | GPUs={valid_device_ids or 'none'} | "
+        f"Training started | device={device} ({device_name}) | GPUs={valid_device_ids or 'none'} | "
         f"epochs={num_epochs} (minimum={minimum_epochs}) | train/val/test batches="
         f"{len(train_loader)}/{len(val_loader)}/{len(test_loader)} | "
         f"lr={float(lr):.3g} | patience={patience} | "
@@ -830,7 +830,7 @@ def train_model(model, train_loader, val_loader, test_loader, num_epochs=10, lr=
         configured_class_ratio = float("nan")
         objective_normalization = "per_batch_weighted_mean_fallback"
     logger.info(
-        "稀疏监督目标 | normalization=%s | class_weight_totals=%s | N/P=%s",
+        "Sparse supervision objective | normalization=%s | class_weight_totals=%s | N/P=%s",
         objective_normalization,
         train_class_weight_totals,
         (
@@ -843,7 +843,7 @@ def train_model(model, train_loader, val_loader, test_loader, num_epochs=10, lr=
     epoch_progress = track(
         range(num_epochs),
         total=num_epochs,
-        desc="模型训练",
+        desc="Model training",
         unit="epoch",
         leave=True,
     )
@@ -873,7 +873,7 @@ def train_model(model, train_loader, val_loader, test_loader, num_epochs=10, lr=
         batch_progress = track(
             train_loader,
             total=len(train_loader),
-            desc=f"Epoch {epoch + 1}/{num_epochs} 训练",
+            desc=f"Epoch {epoch + 1}/{num_epochs} training",
             unit="batch",
         )
         for batch_index, batch in enumerate(batch_progress, start=1):
@@ -1020,7 +1020,7 @@ def train_model(model, train_loader, val_loader, test_loader, num_epochs=10, lr=
             best_weight_source = validation_weight_source
             
             save_msg = (
-                f"新的最佳验证模型：epoch={epoch + 1} | "
+                f"New best validation model: epoch={epoch + 1} | "
                 f"val_{selection_metric}={best_val_score:.4f} | "
                 f"threshold={best_threshold:.3f} | weights={best_weight_source}"
             )

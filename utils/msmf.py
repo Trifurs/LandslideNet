@@ -335,7 +335,7 @@ def _prepare_fold_predictors(
             }
         )
         console(
-            f"已加载 Fold test-region={test_region} | device={device} | "
+            f"Loaded Fold test-region={test_region} | device={device} | "
             f"validation threshold={threshold:.3f}"
         )
     return predictors, thresholds
@@ -383,7 +383,7 @@ def _write_stride_surface(
             for window in track(
                 windows,
                 total=window_count(destination.height, destination.width, tile_size),
-                desc=f"写出 {destination_path.stem}",
+                desc=f"Writing {destination_path.stem}",
                 unit="tile",
             ):
                 r0 = int(window.row_off)
@@ -595,7 +595,7 @@ def _fuse_stride_maps(
         for window in track(
             windows,
             total=window_count(reference.height, reference.width, tile_size),
-            desc="逐像元 MSMF 中位数融合",
+            desc="Pixel-wise MSMF median fusion",
             unit="tile",
             leave=True,
         ):
@@ -828,7 +828,7 @@ def run_deep_msmf(args):
     )
 
     console(
-        "MSMF 全域部署制图启动 | "
+        "MSMF full-domain deployment mapping started | "
         f"model={model_name} | sampling={sampling_method} | "
         f"fold ensemble={selected_regions} | crop={crop_size} | "
         f"strides={strides} | devices={[str(value) for value in devices]} | "
@@ -855,12 +855,12 @@ def run_deep_msmf(args):
         ):
             if args.resume and stride_path.is_file():
                 console(
-                    f"恢复运行：已存在 stride={stride} 完整结果，跳过 "
+                    f"Resuming: complete result already exists for stride={stride}; skipping "
                     f"({index}/{len(strides)})"
                 )
                 continue
             console(
-                f"开始 MSMF stride={stride} "
+                f"Starting MSMF stride={stride} "
                 f"({index}/{len(strides)})"
             )
             _run_one_stride(
@@ -878,7 +878,7 @@ def run_deep_msmf(args):
                 profile=profile,
                 tile_size=int(args.fusion_tile_size),
             )
-            console(f"stride={stride} 完成：{stride_path}")
+            console(f"stride={stride} completed: {stride_path}")
 
     valid_cells = _fuse_stride_maps(
         stride_paths=stride_paths,
@@ -946,14 +946,14 @@ def run_deep_msmf(args):
     if not args.keep_intermediate:
         shutil.rmtree(work_dir, ignore_errors=True)
 
-    console(f"MSMF 全域概率图完成：{probability_path}")
+    console(f"MSMF full-domain probability map completed: {probability_path}")
     if binary_path:
         console(
-            f"二值图完成：{binary_path} | threshold={selected_threshold:.3f}"
+            f"Binary map completed: {binary_path} | threshold={selected_threshold:.3f}"
         )
     if disagreement_path:
-        console(f"跨步长 MAD 诊断图完成：{disagreement_path}")
-    console(f"元数据：{metadata_path}")
+        console(f"Cross-stride MAD diagnostic map completed: {disagreement_path}")
+    console(f"Metadata: {metadata_path}")
     return str(probability_path)
 
 

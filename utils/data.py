@@ -74,7 +74,7 @@ def validate_aligned_rasters(reference_path: str, other_paths: Sequence[str]) ->
     for path in track(
         other_paths,
         total=len(other_paths),
-        desc="检查栅格对齐",
+        desc="Checking raster alignment",
         unit="raster",
     ):
         with rasterio.open(path) as source:
@@ -190,7 +190,7 @@ def _count_region_cells(
         for window in track(
             windows,
             total=window_count(regions.height, regions.width, chunk_size),
-            desc="统计宏区域有效像元",
+            desc="Counting valid macro-region pixels",
             unit="tile",
         ):
             data = regions.read(1, window=window)
@@ -224,7 +224,7 @@ def audit_region_connectivity(
     region_ids: Sequence[int] | None = None,
 ) -> dict:
     """Require each positive region identifier to be one 4-neighbour component."""
-    with timed_task("读取宏区域并检查连通性"):
+    with timed_task("Reading macro-regions and checking connectivity"):
         with rasterio.open(regions_path) as source:
             data = source.read(1, masked=True)
             values = np.asarray(data.data)
@@ -244,7 +244,7 @@ def audit_region_connectivity(
     for region_id in track(
         selected,
         total=len(selected),
-        desc="检查区域连通性",
+        desc="Checking region connectivity",
         unit="region",
     ):
         components, component_count = ndimage.label(
@@ -351,7 +351,7 @@ def collect_positive_points(
         for window in track(
             windows,
             total=window_count(inventory.height, inventory.width, chunk_size),
-            desc="扫描滑坡清单",
+            desc="Scanning landslide inventory",
             unit="tile",
         ):
             inventory_data = inventory.read(1, window=window)
@@ -484,7 +484,7 @@ def sample_background_points(
             for window in track(
                 windows,
                 total=window_count(regions.height, regions.width, chunk_size),
-                desc=f"统计背景候选区 {allowed_regions.tolist()}",
+                desc=f"Counting background candidate regions {allowed_regions.tolist()}",
                 unit="tile",
             ):
                 region_data = regions.read(1, window=window)
@@ -509,7 +509,7 @@ def sample_background_points(
             for window, take in track(
                 selected_windows,
                 total=len(selected_windows),
-                desc="抽取背景候选像元",
+                desc="Extracting background candidate pixels",
                 unit="tile",
             ):
                 region_data = regions.read(1, window=window)
@@ -544,7 +544,7 @@ def sample_background_points(
         for window in track(
             windows,
             total=window_count(inventory.height, inventory.width, chunk_size),
-            desc=f"统计背景候选区 {allowed_regions.tolist()}",
+            desc=f"Counting background candidate regions {allowed_regions.tolist()}",
             unit="tile",
         ):
             inventory_data = inventory.read(1, window=window)
@@ -577,7 +577,7 @@ def sample_background_points(
         for window, take in track(
             selected_windows,
             total=len(selected_windows),
-            desc="抽取背景候选像元",
+            desc="Extracting background candidate pixels",
             unit="tile",
         ):
             inventory_data = inventory.read(1, window=window)
@@ -634,7 +634,7 @@ def read_point_features(
     task_total = len(factor_paths) * len(groups)
     feature_progress = track(
         total=task_total,
-        desc=f"读取点位因子 ({len(points):,} points)",
+        desc=f"Reading point factors ({len(points):,} points)",
         unit="tile",
     )
     try:
@@ -690,7 +690,7 @@ def compute_region_factor_ranges(
         statistics_progress = track(
             total=len(factor_paths)
             * window_count(regions.height, regions.width, chunk_size),
-            desc="计算训练区因子范围",
+            desc="Computing training-region factor ranges",
             unit="tile",
         )
         for factor_index, path in enumerate(factor_paths):
@@ -826,7 +826,7 @@ def compute_training_category_counts(
             for window in track(
                 windows,
                 total=window_count(regions.height, regions.width, chunk_size),
-                desc="统计训练区枚举因子",
+                desc="Counting enumerated training-region factors",
                 unit="tile",
             ):
                 region_data = regions.read(1, window=window)
@@ -1353,13 +1353,13 @@ class FrozenDWSS:
             kde,
             prototypes,
             max(1, int(kde_chunk_size)),
-            "DWSS KDE 正样本原型",
+            "DWSS KDE positive-sample prototypes",
         )
         candidate_density = evaluate_kde(
             kde,
             normalized_candidates,
             max(1, int(kde_chunk_size)),
-            "DWSS KDE 训练候选",
+            "DWSS KDE training candidates",
         )
         density_scale = max(
             float(np.max(prototype_density)),

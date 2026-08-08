@@ -86,19 +86,19 @@ def timed_task(description: str, *, level: str = "INFO"):
     started = time.monotonic()
     announce = _PROGRESS_ENABLED
     if announce:
-        console(f"开始：{description}", level=level)
+        console(f"Started: {description}", level=level)
     try:
         yield
     except Exception:
         if announce:
             console(
-                f"失败：{description}（耗时 {time.monotonic() - started:.1f}s）",
+                f"Failed: {description} (elapsed {time.monotonic() - started:.1f}s)",
                 level="ERROR",
             )
         raise
     else:
         if announce:
-            console(f"完成：{description}（耗时 {time.monotonic() - started:.1f}s）")
+            console(f"Completed: {description} (elapsed {time.monotonic() - started:.1f}s)")
 
 
 class TqdmLoggingHandler(logging.Handler):

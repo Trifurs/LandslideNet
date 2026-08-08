@@ -302,7 +302,7 @@ def resolve_experiment_dir(
                     + _format_candidate_audits(audits)
                 )
             experiment_dir = Path(selected["path"])
-            console(f"XML 自动选择训练实验：{experiment_dir}")
+            console(f"XML automatically selected training experiment: {experiment_dir}")
     elif source_path.is_file():
         raise ValueError(
             f"Unsupported source file: {source_path}. Expected an XML configuration "
@@ -481,7 +481,7 @@ def _write_classical_fold_map(
                 total=window_count(
                     region_source.height, region_source.width, tile_size
                 ),
-                desc=f"{model_name} Fold-R{test_region} 全域直接推理",
+                desc=f"{model_name} Fold-R{test_region} full-domain direct inference",
                 unit="tile",
             ):
                 region = region_source.read(1, window=window)
@@ -567,7 +567,7 @@ def _fuse_classical_fold_maps(
             for window in track(
                 windows,
                 total=window_count(reference.height, reference.width, tile_size),
-                desc="机器学习跨折中位数融合（非 MSMF）",
+                desc="Classical ML cross-fold median fusion (non-MSMF)",
                 unit="tile",
                 leave=True,
             ):
@@ -633,7 +633,7 @@ def generate_classical_full_map(
     if binary_path is not None:
         completed_outputs.append(binary_path)
     if resume and all(path.is_file() for path in completed_outputs):
-        console(f"恢复运行：已完成机器学习全域图，跳过 {probability_path}")
+        console(f"Resuming: classical ML full-domain map already completed; skipping {probability_path}")
         return str(probability_path)
     for path in (probability_path, binary_path, metadata_path):
         if path is not None and path.exists() and not overwrite:
@@ -699,7 +699,7 @@ def generate_classical_full_map(
         fold_path = work_dir / f"{stem}_fold_R{test_region}.tif"
         fold_paths.append(fold_path)
         if resume and fold_path.is_file():
-            console(f"恢复运行：跳过已完成机器学习 Fold-R{test_region} 全图")
+            console(f"Resuming: skipping completed classical ML Fold-R{test_region} full map")
             continue
         predicted_by_fold[test_region] = _write_classical_fold_map(
             model_name=model_name,
@@ -756,7 +756,7 @@ def generate_classical_full_map(
     )
     if not keep_intermediate:
         shutil.rmtree(work_dir, ignore_errors=True)
-    console(f"机器学习全域图完成（未使用 MSMF）：{probability_path}")
+    console(f"Classical ML full-domain map completed (without MSMF): {probability_path}")
     return str(probability_path)
 
 
@@ -864,7 +864,7 @@ def run_full(args):
         raise ValueError("Prediction tile size must be positive.")
 
     console(
-        "步骤 3/3：生成全域部署易发性图 | "
+        "Step 3/3: generate full-domain deployment susceptibility maps | "
         f"models={len(models)} | sampling={sampling_methods} | "
         "deep=MSMF | classical=direct-per-pixel | "
         f"output={output_dir}"
@@ -872,7 +872,7 @@ def run_full(args):
     outputs = []
     progress = track(
         total=len(models) * len(sampling_methods),
-        desc="全域制图总进度",
+        desc="Overall full-domain mapping progress",
         unit="map",
         leave=True,
     )
@@ -893,7 +893,7 @@ def run_full(args):
                 getattr(args, "resume", False)
                 and all(path.is_file() for path in completed_outputs)
             ):
-                console(f"恢复运行：已完成 {model_name}/{method}，跳过。")
+                console(f"Resuming: {model_name}/{method} already completed; skipping.")
                 outputs.append(str(probability_path))
                 progress.update(1)
                 continue
@@ -957,7 +957,7 @@ def run_full(args):
                 f"{model_name}/{method}", refresh=False
             )
     progress.close()
-    console(f"步骤 3/3 完成，共生成 {len(outputs)} 幅全域概率图。")
+    console(f"Step 3/3 complete; generated {len(outputs)} full-domain probability maps.")
     return outputs
 
 
@@ -1090,7 +1090,7 @@ def parse_args(argv=None):
         "--progress",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="显示实时进度条（默认开启，可用 --no-progress 关闭）。",
+        help="Show live progress bars (enabled by default; disable with --no-progress).",
     )
     args = parser.parse_args(argv)
     if args.batch_size is not None and args.batch_size < 1:

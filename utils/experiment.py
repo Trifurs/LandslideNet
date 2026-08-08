@@ -924,7 +924,7 @@ def write_sample_manifest(path, transform, method, fold_index, region_names,
     )
     manifest_progress = track(
         total=total_rows,
-        desc=f"Fold {fold_index} {method} 样本清单",
+        desc=f"Fold {fold_index} {method} sample inventory",
         unit="sample",
     )
     with open(path, "w", newline="", encoding="utf-8") as handle:
@@ -1068,7 +1068,7 @@ def plot_macro_region_layout(path, regions_path, positives, region_ids, region_n
         import matplotlib.pyplot as plt
         from matplotlib.patches import Patch
     except ImportError:
-        console("matplotlib 不可用，跳过宏区域布局图。", level="WARNING")
+        console("matplotlib is unavailable; skipping the macro-region layout figure.", level="WARNING")
         return
 
     with rasterio.open(regions_path) as source:
@@ -1634,7 +1634,7 @@ def run(args):
     ]
     model_dependency_audit = dependency_status(requested_classical)
     console(
-        "步骤 2/3：连续区域外留实验 | "
+        "Step 2/3: contiguous regional holdout experiment | "
         f"model_selection={model_selection_source} | models={len(requested_models)} | "
         f"sampling={args.sampling_methods} | mode="
         f"{'audit' if args.audit_only else 'prepare' if args.prepare_only else 'train'}"
@@ -1646,7 +1646,7 @@ def run(args):
     ]
     if missing_dependencies:
         console(
-            "尚未安装的可选模型依赖：" + ", ".join(missing_dependencies),
+            "Optional model dependencies not installed: " + ", ".join(missing_dependencies),
             level="WARNING",
         )
     if not (args.audit_only or args.prepare_only):
@@ -1678,7 +1678,7 @@ def run(args):
     factors_dir = normalize_path(args.factors_dir or params["input_factors_dir"])
     factor_paths = list_factor_paths(factors_dir)
     console(
-        f"输入：inventory={args.inventory} | regions={args.regions} | "
+        f"Inputs: inventory={args.inventory} | regions={args.regions} | "
         f"factors={len(factor_paths)}"
     )
     frequency_ratio_value = getattr(args, "frequency_ratio_factors", None)
@@ -1797,7 +1797,7 @@ def run(args):
         for region_id, count in zip(valid_region_values, valid_region_counts)
     }
     console(
-        "区域有效滑坡像元："
+        "Valid landslide pixels by region: "
         + ", ".join(
             f"R{region_id}={factor_valid_positive_counts.get(region_id, 0):,}"
             for region_id in region_ids
@@ -1832,8 +1832,8 @@ def run(args):
         if count < adequate_support:
             tier = "very low" if count < low_support_warning else "limited"
             console(
-                f"宏区域 {region_id} 仅有 {count} 个有效滑坡像元（{tier} support）；"
-                "必须报告置信区间，避免按点估计对区域排序。",
+                f"Macro-region {region_id} has only {count} valid landslide pixels ({tier} support); "
+                "confidence intervals must be reported, and regions must not be ranked by point estimates.",
                 level="WARNING",
             )
 
@@ -1882,8 +1882,8 @@ def run(args):
     with open(software_path, "w", encoding="utf-8") as handle:
         json.dump(environment, handle, indent=2, ensure_ascii=False)
     console(
-        f"运行设备：CUDA={environment['cuda_available']} | "
-        f"GPU 数={environment['cuda_device_count']} | "
+        f"Runtime device: CUDA={environment['cuda_available']} | "
+        f"GPU count={environment['cuda_device_count']} | "
         f"PyTorch={environment['packages'].get('torch')} | output={output_dir}"
     )
     with open(os.path.join(output_dir, "model_registry.json"), "w", encoding="utf-8") as handle:
@@ -2202,7 +2202,7 @@ def run(args):
             json.dumps(protocol, indent=2, ensure_ascii=False), encoding="utf-8"
         )
     if args.audit_only:
-        console(f"审计完成，结果目录：{output_dir}")
+        console(f"Audit completed; results directory: {output_dir}")
         return
 
     all_metrics = []
@@ -2213,7 +2213,7 @@ def run(args):
     )
     overall_progress = track(
         total=len(outer_test_regions) * jobs_per_fold,
-        desc="区域实验总进度",
+        desc="Overall regional-experiment progress",
         unit="job",
         leave=True,
     )
@@ -2237,7 +2237,7 @@ def run(args):
         if not splits_are_region_disjoint:
             raise RuntimeError(f"Region leakage detected before fold {fold_index} preparation.")
         console(
-            f"开始 Fold {fold_index}/{len(region_ids)} | test={test_region} | "
+            f"Starting Fold {fold_index}/{len(region_ids)} | test={test_region} | "
             f"val={validation_region} | train={training_regions}"
         )
         fold_dir = os.path.join(output_dir, f"Fold_{fold_index}_TestRegion_{test_region}")
@@ -2258,7 +2258,7 @@ def run(args):
 
         fold_progress = track(
             total=8,
-            desc=f"Fold {fold_index} 数据准备",
+            desc=f"Fold {fold_index} data preparation",
             unit="stage",
         )
 
@@ -2272,7 +2272,7 @@ def run(args):
             chunk_size=args.raster_chunk_size,
         )
         fold_progress.update(1)
-        fold_progress.set_postfix_str("候选池与点位因子", refresh=False)
+        fold_progress.set_postfix_str("Candidate pool and point factors", refresh=False)
 
         split_data = {}
         for split_index, split in enumerate(("train", "val", "test"), start=1):
@@ -2301,7 +2301,7 @@ def run(args):
             }
             fold_progress.update(1)
 
-        fold_progress.set_postfix_str("训练区 FR 统计", refresh=False)
+        fold_progress.set_postfix_str("Training-region FR statistics", refresh=False)
         normalizer = FrozenMinMaxNormalizer.from_region_ranges(
             factor_paths,
             training_factor_ranges,
@@ -2329,7 +2329,7 @@ def run(args):
         )
 
         dwss = None
-        fold_progress.set_postfix_str("折内 DWSS 拟合", refresh=False)
+        fold_progress.set_postfix_str("Within-fold DWSS fitting", refresh=False)
         if "dwss" in args.sampling_methods:
             dwss = FrozenDWSS.fit(
                 split_data["train"]["positive_raw"],
@@ -2408,7 +2408,7 @@ def run(args):
         with open(os.path.join(fold_dir, "fold_leakage_audit.json"), "w", encoding="utf-8") as handle:
             json.dump(fold_audit, handle, indent=2, ensure_ascii=False)
         fold_progress.update(1)
-        fold_progress.set_postfix_str("完成", refresh=False)
+        fold_progress.set_postfix_str("Completed", refresh=False)
         fold_progress.close()
 
         method_seed_offsets = {"dwss": 101, "random": 211}
@@ -2688,7 +2688,7 @@ def run(args):
                         loaders["train"].region_weighting_audit
                     )
                     console(
-                        f"  深度模型参数量={metadata['trainable_parameters']:,} | "
+                        f"  Deep-model parameters={metadata['trainable_parameters']:,} | "
                         f"train/val/test batches={len(loaders['train'])}/"
                         f"{len(loaders['val'])}/{len(loaders['test'])} | "
                         f"unique samples="
@@ -2834,20 +2834,20 @@ def run(args):
                     f"F{fold_index} {method}/{model_name}", refresh=False
                 )
                 console(
-                    f"模型完成 | Fold={fold_index} | sampling={method} | "
+                    f"Model completed | Fold={fold_index} | sampling={method} | "
                     f"model={spec.display_name} | "
                     f"{metric_line(metrics, ('auc', 'pr_auc', 'f1', 'kappa', 'precision', 'recall'))}"
                 )
 
     overall_progress.close()
-    report_progress = track(total=2, desc="生成论文结果", unit="stage", leave=True)
+    report_progress = track(total=2, desc="Generating manuscript results", unit="stage", leave=True)
     write_comparison_tables(all_metrics, output_dir)
     report_progress.update(1)
     report_progress.set_postfix_str("SRC/PRC", refresh=False)
     write_rate_curve_reports(all_metrics, output_dir)
     report_progress.update(1)
     report_progress.close()
-    console(f"步骤 2/3 完成，连续区域外留结果目录：{output_dir}")
+    console(f"Step 2/3 complete; contiguous regional holdout results directory: {output_dir}")
 
 
 def parse_args(argv=None):
@@ -3041,7 +3041,7 @@ def parse_args(argv=None):
         "--progress",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="显示实时进度条（默认开启，可用 --no-progress 关闭）。",
+        help="Show live progress bars (enabled by default; disable with --no-progress).",
     )
     parser.add_argument(
         "--resume",

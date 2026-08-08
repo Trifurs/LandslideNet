@@ -161,7 +161,7 @@ def write_classical_training_history(
     round_iterator = track(
         _iter_round_probabilities(model, name, train_x, val_x),
         total=total_rounds,
-        desc=f"{MODEL_SPECS[name].display_name} 逐轮历史",
+        desc=f"{MODEL_SPECS[name].display_name} per-round history",
         unit="round",
     )
     for round_index, train_probability, val_probability in round_iterator:
@@ -288,16 +288,16 @@ def train_classical_model(
     spec = MODEL_SPECS[name]
     progress = track(
         total=6,
-        desc=f"{spec.display_name} 训练流程",
+        desc=f"{spec.display_name} training workflow",
         unit="stage",
         leave=True,
     )
-    progress.set_postfix_str("构建模型", refresh=False)
+    progress.set_postfix_str("Building model", refresh=False)
     model = build_classical_model(name, seed, n_jobs, iterations)
     progress.update(1)
-    progress.set_postfix_str("拟合训练集", refresh=True)
+    progress.set_postfix_str("Fitting training set", refresh=True)
     with timed_task(
-        f"{spec.display_name} 拟合（train={len(train_y):,}, val={len(val_y):,}）"
+        f"{spec.display_name} fitting (train={len(train_y):,}, val={len(val_y):,})"
     ):
         _fit(
             model, name, train_x, train_y, train_weights, val_x, val_y, iterations
@@ -318,7 +318,7 @@ def train_classical_model(
     )
 
     # Every selection decision is complete before test features are evaluated.
-    progress.set_postfix_str("验证集阈值选择", refresh=False)
+    progress.set_postfix_str("Selecting validation threshold", refresh=False)
     val_probability = _probabilities(model, val_x)
     threshold_details = find_best_threshold(
         val_y,
@@ -335,11 +335,11 @@ def train_classical_model(
     )
     progress.update(1)
     console(
-        f"{spec.display_name} 验证结果 | {metric_line(val_metrics)} | "
+        f"{spec.display_name} validation results | {metric_line(val_metrics)} | "
         f"threshold={threshold:.3f}"
     )
 
-    progress.set_postfix_str("训练集成功率评估", refresh=False)
+    progress.set_postfix_str("Evaluating training success rate", refresh=False)
     train_probability = _probabilities(model, train_x)
     np.savez_compressed(
         os.path.join(output_dir, "success_predictions.npz"),
@@ -358,7 +358,7 @@ def train_classical_model(
     )
     progress.update(1)
 
-    progress.set_postfix_str("测试区单次评估", refresh=False)
+    progress.set_postfix_str("Single-pass test-region evaluation", refresh=False)
     test_x, test_y = arrays["test"]
     test_probability = _probabilities(model, test_x)
     test_prediction = (test_probability >= threshold).astype(np.int64)
@@ -374,7 +374,7 @@ def train_classical_model(
         confidence=bootstrap_confidence,
         seed=bootstrap_seed,
         block_ids=spatial_tile_ids(points["test"], crop_size),
-        progress_desc=f"{spec.display_name} 空间块 Bootstrap",
+        progress_desc=f"{spec.display_name} spatial-block bootstrap",
     ))
     metrics.update({
         "best_epoch": None,
@@ -399,10 +399,10 @@ def train_classical_model(
     })
     progress.update(1)
     console(
-        f"{spec.display_name} 测试结果 | {metric_line(metrics, ('auc', 'pr_auc', 'f1', 'kappa', 'precision', 'recall'))}"
+        f"{spec.display_name} test results | {metric_line(metrics, ('auc', 'pr_auc', 'f1', 'kappa', 'precision', 'recall'))}"
     )
 
-    progress.set_postfix_str("保存模型与预测", refresh=False)
+    progress.set_postfix_str("Saving model and predictions", refresh=False)
     joblib.dump(model, os.path.join(output_dir, "best_model.joblib"))
     metadata_path = Path(output_dir, "model_metadata.json")
     existing_metadata = (
@@ -434,6 +434,6 @@ def train_classical_model(
         probability=test_probability,
     )
     progress.update(1)
-    progress.set_postfix_str("完成", refresh=False)
+    progress.set_postfix_str("Completed", refresh=False)
     progress.close()
     return metrics

@@ -214,7 +214,7 @@ def validate_factor_grids(paths: Sequence[str]) -> dict:
     for path in track(
         list(paths[1:]),
         total=max(len(paths) - 1, 0),
-        desc="检查地形因子网格",
+        desc="Checking terrain-factor grids",
         unit="raster",
     ):
         with rasterio.open(path) as source:
@@ -241,7 +241,7 @@ def _read_coarse_features(paths: Sequence[str], downsample: int, grid: Mapping) 
     for path in track(
         list(paths),
         total=len(paths),
-        desc="读取低分辨率地形因子",
+        desc="Reading low-resolution terrain factors",
         unit="factor",
     ):
         with rasterio.open(path) as source:
@@ -505,7 +505,7 @@ def _write_full_resolution_rasters(paths: Sequence[str], grid: Mapping,
             for window in track(
                 windows,
                 total=window_count(grid["height"], grid["width"], 1024),
-                desc="写入全分辨率宏区域",
+                desc="Writing full-resolution macro-regions",
                 unit="tile",
             ):
                 row_start = int(window.row_off)
@@ -665,9 +665,9 @@ def build_terrain_macro_regions(config: TerrainRegionConfig, overwrite: bool = F
     """Build the single K=5 terrain-derived regionalization."""
     config.validate()
     console(
-        "区域构建配置："
+        "Region-building configuration: "
         f"K={config.region_count}，"
-        f"因子={len(config.factor_names)}，降采样={config.downsample}"
+        f"factors={len(config.factor_names)}, downsample={config.downsample}"
     )
     factor_paths = resolve_factor_paths(config.factors_dir, config.factor_names)
     grid = validate_factor_grids(factor_paths)
@@ -691,7 +691,7 @@ def build_terrain_macro_regions(config: TerrainRegionConfig, overwrite: bool = F
                 "Inspect it or rebuild explicitly with --force-regions/--force."
             )
     if not pending:
-        console(f"区域产品均已存在且配置一致：{sorted(skipped)}")
+        console(f"All region products already exist with matching configuration: {sorted(skipped)}")
         return {"built": {}, "skipped": skipped, "outputs": outputs}
 
     prepared = _read_coarse_features(factor_paths, config.downsample, grid)
@@ -714,10 +714,10 @@ def build_terrain_macro_regions(config: TerrainRegionConfig, overwrite: bool = F
     for count in track(
         list(pending),
         total=len(pending),
-        desc="空间约束聚类",
+        desc="Spatially constrained clustering",
         unit="K",
     ):
-        with timed_task(f"拟合 K={count} Ward 空间聚类"):
+        with timed_task(f"Fitting K={count} Ward spatial clustering"):
             labels, audit = cluster_continuous_regions(
                 matrix, connectivity, prepared["domain"], count
             )
@@ -741,7 +741,7 @@ def build_terrain_macro_regions(config: TerrainRegionConfig, overwrite: bool = F
         for count, final_path in track(
             list(pending.items()),
             total=len(pending),
-            desc="区域连通性修复与输出",
+            desc="Repairing region connectivity and writing outputs",
             unit="product",
         ):
             full_audit = _enforce_full_connectivity(
@@ -794,8 +794,8 @@ def build_terrain_macro_regions(config: TerrainRegionConfig, overwrite: bool = F
                 _write_layout_plot(plot_path(final_path), labels_by_count[count], count)
             built[count] = final_path
             console(
-                f"K={count} 完成：{final_path}；"
-                f"有效像元={sum(full_audit['full_cell_counts'].values()):,}"
+                f"K={count} completed: {final_path}; "
+                f"valid pixels={sum(full_audit['full_cell_counts'].values()):,}"
             )
     except Exception:
         for path in temporary.values():
@@ -831,6 +831,6 @@ if __name__ == "__main__":
     configure_progress(arguments.progress)
     result = build_from_xml(arguments.xml, overwrite=arguments.force)
     for count, path in sorted(result["built"].items()):
-        console(f"已构建 K={count}：{path}")
+        console(f"Built K={count}: {path}")
     for count, path in sorted(result["skipped"].items()):
-        console(f"已核验 K={count}：{path}")
+        console(f"Validated K={count}: {path}")

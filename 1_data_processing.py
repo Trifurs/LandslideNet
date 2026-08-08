@@ -28,7 +28,7 @@ def parse_args(argv=None):
         "--progress",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="显示实时进度条（默认开启，可用 --no-progress 关闭）。",
+        help="Show live progress bars (enabled by default; disable with --no-progress).",
     )
     # Retained as a harmless compatibility alias for commands from the prior revision.
     parser.add_argument("--regions-only", action="store_true", help=argparse.SUPPRESS)
@@ -38,13 +38,13 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
     configure_progress(args.progress)
-    console(f"步骤 1/3：构建或核验连续宏区域；配置={args.xml}")
+    console(f"Step 1/3: build or validate contiguous macro-regions; config={args.xml}")
     result = build_from_xml(args.xml, overwrite=args.force)
     for count, path in sorted(result["built"].items()):
-        console(f"已构建 K={count}：{path}")
+        console(f"Built K={count}: {path}")
     for count, path in sorted(result["skipped"].items()):
-        console(f"已核验 K={count}：{path}")
-    console("步骤 1/3 完成。")
+        console(f"Validated K={count}: {path}")
+    console("Step 1/3 complete.")
 
 
 if __name__ == "__main__":
