@@ -84,7 +84,11 @@ def write_rate_curve_reports(metrics, output_dir):
         "model", "model_display_name", "sampling_method", "curve_type"
     ]
     summary = detailed.groupby(group_columns)["rank_capture_auc"].agg(
-        ["mean", "std", "min", "max", "count"]
+        mean="mean",
+        std=lambda values: values.std(ddof=0),
+        min="min",
+        max="max",
+        count="count",
     ).reset_index()
     summary.rename(columns={"mean": "equal_region_mean"}, inplace=True)
     summary.to_csv(output_dir / "rate_curve_auc_region_summary.csv", index=False)

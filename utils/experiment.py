@@ -1256,7 +1256,7 @@ def write_unified_five_fold_table(frame, output_dir):
                     row[column] = float(values.mean())
                 else:
                     row[column] = (
-                        float(values.std(ddof=1)) if values.notna().sum() > 1 else 0.0
+                        float(values.std(ddof=0)) if values.notna().sum() > 1 else 0.0
                     )
             summary_rows.append(row)
 
